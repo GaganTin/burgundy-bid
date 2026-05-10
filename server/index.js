@@ -737,6 +737,16 @@ async function jobPurgeOldActivityLogs() {
   return { rowCount: operational.rowCount + security.rowCount };
 }
 
+// Format a JS Date/timestamp as "25th May 2026".
+function formatEmailDate(d) {
+  const date = new Date(d);
+  const day = date.getUTCDate();
+  const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const suffix = (day % 100 >= 11 && day % 100 <= 13) ? 'th'
+    : day % 10 === 1 ? 'st' : day % 10 === 2 ? 'nd' : day % 10 === 3 ? 'rd' : 'th';
+  return `${day}${suffix} ${months[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
+}
+
 // Send credit expiry reminder emails at 3 points in the expiry lifecycle:
 //   7 days before  → "your credits expire soon"
 //   1 day before   → "your credits expire tomorrow"
@@ -751,9 +761,9 @@ async function jobCreditExpiryReminders() {
       type: 'credits_expiry_7d',
       daysOffset: 7,         // credits_expiry_date is this many days in the future
       subject: 'Your Burgundy Bid credits expire in 7 days',
-      body: (name) => `
+      body: (name, expiryDate) => `
         <p style="margin:0 0 12px;">Hi ${name || 'there'},</p>
-        <p style="margin:0 0 20px;color:#555;">Your Burgundy Bid credits will expire in <strong>7 days</strong>. Once they expire you won't be able to run new lookups or AI Image Searches.</p>
+        <p style="margin:0 0 20px;color:#555;">Your Burgundy Bid credits will expire in <strong>7 days</strong> (${formatEmailDate(expiryDate)}). Once they expire you won't be able to run new lookups or AI Image Searches.</p>
         <div style="text-align:center;margin:28px 0;">
           <a href="${upgradeUrl}" style="display:inline-block;background:#800020;color:#ffffff;text-decoration:none;
              font-weight:700;font-size:15px;padding:14px 32px;border-radius:6px;">Upgrade Now</a>
@@ -764,9 +774,9 @@ async function jobCreditExpiryReminders() {
       type: 'credits_expiry_1d',
       daysOffset: 1,
       subject: 'Your Burgundy Bid credits expire tomorrow',
-      body: (name) => `
+      body: (name, expiryDate) => `
         <p style="margin:0 0 12px;">Hi ${name || 'there'},</p>
-        <p style="margin:0 0 20px;color:#555;">This is your final reminder — your Burgundy Bid credits <strong>expire tomorrow</strong>. After that, lookups and AI Image Searches will be blocked until you upgrade.</p>
+        <p style="margin:0 0 20px;color:#555;">This is your final reminder — your Burgundy Bid credits expire <strong>tomorrow, ${formatEmailDate(expiryDate)}</strong>. After that, lookups and AI Image Searches will be blocked until you upgrade.</p>
         <div style="text-align:center;margin:28px 0;">
           <a href="${upgradeUrl}" style="display:inline-block;background:#800020;color:#ffffff;text-decoration:none;
              font-weight:700;font-size:15px;padding:14px 32px;border-radius:6px;">Upgrade Before It's Too Late</a>
@@ -777,14 +787,17 @@ async function jobCreditExpiryReminders() {
       type: 'credits_expired_15d',
       daysOffset: -15,       // credits_expiry_date was 15 days ago
       subject: 'Your Burgundy Bid connections will be removed in 15 days',
-      body: (name) => `
+      body: (name, expiryDate) => {
+        const removalDate = new Date(new Date(expiryDate).getTime() + 30 * 24 * 60 * 60 * 1000);
+        return `
         <p style="margin:0 0 12px;">Hi ${name || 'there'},</p>
-        <p style="margin:0 0 20px;color:#555;">Your Burgundy Bid credits expired 15 days ago. If you don't upgrade in the next <strong>15 days</strong>, your Wine Searcher and Cellar Tracker connections will be automatically removed to free up capacity.</p>
+        <p style="margin:0 0 20px;color:#555;">Your Burgundy Bid credits expired on ${formatEmailDate(expiryDate)}. If you don't upgrade by <strong>${formatEmailDate(removalDate)}</strong>, your Wine Searcher and Cellar Tracker credentials saved on Burgundy Bid will be automatically removed.</p>
         <div style="text-align:center;margin:28px 0;">
           <a href="${upgradeUrl}" style="display:inline-block;background:#800020;color:#ffffff;text-decoration:none;
              font-weight:700;font-size:15px;padding:14px 32px;border-radius:6px;">Reactivate My Account</a>
         </div>
-        <p style="margin:0;color:#777;font-size:14px;">You can reconnect your accounts at any time after upgrading, but you'll need to re-enter your credentials.</p>`,
+        <p style="margin:0;color:#777;font-size:14px;">You can reconnect your accounts at any time after upgrading, but you'll need to re-enter your credentials.</p>`;
+      },
     },
   ];
 
@@ -815,7 +828,7 @@ async function jobCreditExpiryReminders() {
     for (const user of rows.rows) {
       try {
         const name = user.full_name || user.email.split('@')[0] || 'there';
-        await sendEmail(user.email, notif.subject, emailTemplate(notif.body(name)));
+        await sendEmail(user.email, notif.subject, emailTemplate(notif.body(name, user.credits_expiry_date)));
         await pool.query(
           `INSERT INTO email_notifications(user_id, notification_type, reference_date)
            VALUES($1, $2, $3) ON CONFLICT DO NOTHING`,
@@ -1015,15 +1028,20 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 
 // ── Email template — responsive, works on mobile + desktop clients ─────────
+// color-scheme: light only — prevents Apple Mail / Gmail dark mode from
+// re-mapping #800020 and other brand colours to their dark-mode equivalents.
 function emailTemplate(bodyHtml, footerNote = '') {
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns:v="urn:schemas-microsoft-com:vml">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="color-scheme" content="light only">
+  <meta name="supported-color-schemes" content="light">
   <style>
-    body { margin:0; padding:0; background:#f4f4f5; font-family:Arial,Helvetica,sans-serif; }
+    :root { color-scheme: light only; }
+    body { margin:0; padding:0; background:#f4f4f5; font-family:Arial,Helvetica,sans-serif; color-scheme:light only; }
     @media only screen and (max-width:620px) {
       .wrap  { width:100% !important; }
       .body  { padding:28px 20px !important; }
@@ -1032,7 +1050,7 @@ function emailTemplate(bodyHtml, footerNote = '') {
     }
   </style>
 </head>
-<body>
+<body style="color-scheme:light only;">
 <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f4f5;">
   <tr>
     <td align="center" style="padding:40px 16px;">
@@ -1041,7 +1059,7 @@ function emailTemplate(bodyHtml, footerNote = '') {
                     overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
         <!-- Header -->
         <tr>
-          <td class="head" style="background:#800020;padding:26px 40px;">
+          <td class="head" style="background:#800020;padding:26px 40px;" bgcolor="#800020">
             <span style="color:#ffffff;font-size:20px;font-weight:700;letter-spacing:-0.3px;
                          font-family:Georgia,serif;">Burgundy Bid</span>
           </td>
