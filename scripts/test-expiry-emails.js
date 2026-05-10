@@ -77,6 +77,7 @@ for (const e of emails) {
   const { error } = await resend.emails.send({ from: FROM, to: [targetEmail], subject: e.subject, html: emailTemplate(e.body) });
   if (error) console.error(`✗ ${e.label}:`, error.message);
   else        console.log(`✓ ${e.label} sent to ${targetEmail}`);
+  await new Promise(r => setTimeout(r, 1000));
 }
 
 await pool.end();
