@@ -921,7 +921,7 @@ function _wsIsNotFound(r) {
 // parts, retries with front-trimmed then back-trimmed name variants.
 async function _wsLookupWithFallback(wsPage, name, vintage, wsCurrency, size) {
   function buildUrl(n) {
-    return `${WS_BASE}/find/${encodeURIComponent(n)}/${vintage || 'any'}/-/Xcurrencycode=${wsCurrency}Xtax_mode=e&shoptype=1%2C0`;
+    return `${WS_BASE}/find/${encodeURIComponent(n)}/${vintage || 'any'}/-/?Xcurrencycode=${wsCurrency}&Xtax_mode=e&shoptype=1%2C0&Xsavecurrency=Y`;
   }
 
   const r0 = await ws_get_wine_data(wsPage, buildUrl(name), size);
@@ -1520,7 +1520,7 @@ async function runLookupForBatch(batchId, logger = () => {}, options = {}) {
                   : (ctConnected ? 'not enabled' : 'no connection'),
             });
 
-        const wsSearchUrl = `${WS_BASE}/find/${encodeURIComponent(name)}/${vintage || 'any'}/-/Xcurrencycode=${wsCurrency}Xtax_mode=e&shoptype=1%2C0`;
+        const wsSearchUrl = `${WS_BASE}/find/${encodeURIComponent(name)}/${vintage || 'any'}/-/?Xcurrencycode=${wsCurrency}&Xtax_mode=e&shoptype=1%2C0&Xsavecurrency=Y`;
         const wsCached = _cacheGet(_wsCache, userId, wsSearchUrl);
         const wsPromise = (wsConnected && wsEnabled && wsPage)
           ? (wsCached
