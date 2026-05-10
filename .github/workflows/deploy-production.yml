@@ -1,0 +1,28 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy-backend:
+    name: Backend → Hetzner (prod)
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: ${{ secrets.HETZNER_USER }}
+          key: ${{ secrets.HETZNER_SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ secrets.PROD_APP_DIR }}
+            git fetch origin
+            git reset --hard origin/main
+            # Dev/test scripts never run on production
+            rm -rf scripts/dev
+            npm ci --omit=dev
+            node scripts/migrate.js
+            pm2 reload burgundy-bid-prod --update-env

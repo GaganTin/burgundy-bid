@@ -1,0 +1,8 @@
+{
+  "name": "Burgundy Bid",
+  "short_name": "Bid",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#800020"
+}

@@ -1,0 +1,52 @@
+# Environment — never commit secrets
+.env
+.env.*
+!.env.example
+
+# Application-level backups — contain hashed passwords, session cookies, and PII.
+backups/
+
+# Cloudflare tunnel config (machine-specific credentials)
+.cloudflared/
+config.yml
+
+# Wine-Searcher persistent browser profiles (store PX cookies)
+.ws_browser_profiles/
+
+# Playwright/scraper diagnostic screenshots and HTML captures
+server/scraper_diagnostics/
+server/lookup_diagnostics/
+server/server/
+server/tests/
+
+# Large binary assets — download separately on each machine
+eng.traineddata
+
+# Root-level dev/debug screenshots
+develop_mode_light.png
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependencies and build output
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
