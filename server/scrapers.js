@@ -449,10 +449,8 @@ async function ctLogin(username, password, userId = null, proxyConfig = null) {
 
     const isAuthenticated = htmlClass.includes('authenticated');
     const hasSignOut = bodyText.includes('sign out') || bodyText.includes('logout') || bodyText.includes('signout');
-    const navigatedAway = !pageUrl.includes('/signin') && !pageUrl.includes('/login');
-    const hasMyContent = bodyText.includes('my cellar') || bodyText.includes('my wines') || bodyText.includes('my notes');
 
-    if (isAuthenticated || hasSignOut || (navigatedAway && hasMyContent)) {
+    if (isAuthenticated || hasSignOut) {
       // Extract CT username for account verification.
       // Strategy 1: read from current page (authenticated mobile page has it)
       // Strategy 2: navigate to CT homepage (full desktop UI)
@@ -533,6 +531,15 @@ async function ctLogin(username, password, userId = null, proxyConfig = null) {
         if (accountEmail) console.log('[CT] account email extracted from editprofile.asp');
       } catch (e) {
         console.log('[CT] editprofile.asp extraction error (non-fatal):', e.message);
+      }
+
+      // Final guard: verify the CT API actually returns a valid user.
+      // Prevents false positives where bot-detection redirects produce page signals
+      // that look like a successful login (sign out link in nav, etc.).
+      if (!username && !accountEmail) {
+        console.log('[CT] API and profile checks returned no user — treating as failed login');
+        await context.close(); await browser.close();
+        return { success: false, error: 'Login failed — wrong credentials.' };
       }
 
       const cookies = await _extractCookies(context, 'cellartracker');
