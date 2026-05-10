@@ -666,7 +666,7 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
 
     let html = await page.content();
     let text = (await page.evaluate(() => document.body.innerText)) || '';
-    const actual_url = page.url() || search_url;
+    let actual_url = page.url() || search_url;
 
     if (PX_SIGNALS.some(sig => (text + html).toLowerCase().includes(sig))) {
       console.log('[PX] Captcha detected during wine search — attempting behavioral solve...');
@@ -695,10 +695,38 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
 
     // Detect WS "no results" page before trying to parse prices
     const lowerText = text.toLowerCase();
-    if (/could not find any products|no results found|no wines found/i.test(text) ||
-        lowerText.includes('showing results for') && !lowerText.includes('avg price')) {
-      result.ws_error = 'Wine-Searcher: wine not found — try adjusting the name or vintage';
-      return result;
+    const isNoResults = /could not find any products|no results found|no wines found/i.test(text) ||
+      (lowerText.includes('showing results for') && !lowerText.includes('avg price'));
+
+    if (isNoResults) {
+      // Before giving up, check if WS rendered a "Products for '...'" carousel.
+      // If so, the first card's /find/ href points to the closest matching wine —
+      // follow it (preserving vintage + params from original URL) and parse prices there.
+      const carouselEl = await page.$('.card-product__name a[href^="/find/"], .card-product a[href^="/find/"]').catch(() => null);
+      const foundHref  = carouselEl ? await carouselEl.getAttribute('href').catch(() => null) : null;
+
+      if (foundHref) {
+        try {
+          // Rebuild URL: replace the name segment, keep vintage + trailing params intact.
+          const urlObj   = new URL(search_url);
+          const suffix   = urlObj.pathname.split('/').slice(3).join('/'); // e.g. "any/-/Xcurrencycode=..."
+          const redirectUrl = `${WS_BASE}${foundHref}/${suffix}${urlObj.search}`;
+          console.log(`[WS carousel] No exact match — following carousel link: ${foundHref}`);
+          await page.goto(redirectUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          await page.waitForTimeout(2000 + Math.random() * 1000);
+          html = await page.content();
+          text = (await page.evaluate(() => document.body.innerText)) || '';
+          actual_url = page.url() || redirectUrl;
+          // Fall through to normal price extraction below
+        } catch (e) {
+          console.log(`[WS carousel] Redirect failed: ${e.message}`);
+          result.ws_error = 'Wine-Searcher: wine not found — try adjusting the name or vintage';
+          return result;
+        }
+      } else {
+        result.ws_error = 'Wine-Searcher: wine not found — try adjusting the name or vintage';
+        return result;
+      }
     }
 
     const lines = text.split(/\r?\n/);
@@ -883,9 +911,9 @@ function _wsFallbackNames(name) {
 // Returns true when a ws_get_wine_data result means "wine not found on WS"
 // (as opposed to a connection / PX / timeout error that shouldn't trigger fallback).
 function _wsIsNotFound(r) {
-  return !r.ws_avg && !r.ws_min &&
+  return !r.ws_avg && !r.ws_min && !r.ws_matched &&
     !!r.ws_error &&
-    /wine not found|no results found|could not find|no wines found/i.test(r.ws_error);
+    /wine not found|no results found|no wines found/i.test(r.ws_error);
 }
 
 // Wraps ws_get_wine_data with progressive name-trimming fallback.
