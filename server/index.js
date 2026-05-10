@@ -3414,7 +3414,7 @@ app.put('/auth/password', authMiddleware, async (req, res) => {
       <p style="margin:0 0 12px;">Hi ${full_name || 'there'},</p>
       <p style="margin:0 0 24px;color:#555;">Your Burgundy Bid account password was successfully changed.</p>
       <p style="margin:0 0 8px;color:#555;">If you made this change, no further action is needed.</p>
-      <p style="margin:0;color:#999;font-size:13px;">If you did not make this change, please reset your password immediately or contact support at <a href="mailto:ssupport@burgundybid.com" style="color:#800020;">ssupport@burgundybid.com</a>.</p>
+      <p style="margin:0;color:#999;font-size:13px;">If you did not make this change, please reset your password immediately or contact support at <a href="mailto:support@burgundybid.com" style="color:#800020;">support@burgundybid.com</a>.</p>
     `, 'This is a security notification for your Burgundy Bid account.');
     sendEmail(email, 'Your Burgundy Bid password has been changed', html).catch(e =>
       console.warn('[change-password] Failed to send confirmation email:', e.message)

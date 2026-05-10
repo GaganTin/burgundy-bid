@@ -231,7 +231,9 @@ function createClient(opts = {}) {
         const res = await fetch(`${API}/auth/password`, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify({ current_password, new_password }) });
         if (!res.ok) {
           const txt = await res.text();
-          throw new Error(txt || 'Password change failed');
+          let msg = 'Password change failed';
+          try { msg = JSON.parse(txt)?.error || msg; } catch { msg = txt || msg; }
+          throw new Error(msg);
         }
         return res.json();
       },
