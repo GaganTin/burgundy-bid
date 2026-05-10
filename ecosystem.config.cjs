@@ -25,6 +25,7 @@ module.exports = {
       node_args: '--env-file=.env.staging',
       env: {
         NODE_ENV: 'staging',
+        PORT: 3002,
       },
       watch: false,
       autorestart: true,
