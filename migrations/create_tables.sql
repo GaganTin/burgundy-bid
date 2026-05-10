@@ -175,6 +175,20 @@ CREATE TABLE IF NOT EXISTS users_sessions (
   UNIQUE(user_id, site)
 );
 
+-- ── email_notifications ───────────────────────────────────────────────────────
+-- Dedup log for transactional notification emails (expiry reminders, etc.).
+-- reference_date ties each row to a specific expiry cycle so a user who
+-- re-subscribes and cancels again receives a fresh set of reminders.
+CREATE TABLE IF NOT EXISTS email_notifications (
+  id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id           UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  notification_type TEXT        NOT NULL,
+  sent_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  reference_date    TIMESTAMPTZ NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS email_notifications_dedup
+  ON email_notifications(user_id, notification_type, reference_date);
+
 -- ── refresh_tokens ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS refresh_tokens (
   id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),

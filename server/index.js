@@ -737,6 +737,118 @@ async function jobPurgeOldActivityLogs() {
   return { rowCount: operational.rowCount + security.rowCount };
 }
 
+// Send credit expiry reminder emails at 3 points in the expiry lifecycle:
+//   7 days before  → "your credits expire soon"
+//   1 day before   → "your credits expire tomorrow"
+//   15 days after  → "your connection will be removed in 15 days" (at day 30)
+// Deduplication via email_notifications table (unique on user+type+reference_date).
+async function jobCreditExpiryReminders() {
+  const FRONTEND_URL = process.env.FRONTEND_URL || 'https://burgundybid.com';
+  const upgradeUrl = `${FRONTEND_URL}/Profile?tab=billing`;
+
+  const notifications = [
+    {
+      type: 'credits_expiry_7d',
+      daysOffset: 7,         // credits_expiry_date is this many days in the future
+      subject: 'Your Burgundy Bid credits expire in 7 days',
+      body: (name) => `
+        <p style="margin:0 0 12px;">Hi ${name || 'there'},</p>
+        <p style="margin:0 0 20px;color:#555;">Your Burgundy Bid credits will expire in <strong>7 days</strong>. Once they expire you won't be able to run new lookups or AI Image Searches.</p>
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${upgradeUrl}" style="display:inline-block;background:#800020;color:#ffffff;text-decoration:none;
+             font-weight:700;font-size:15px;padding:14px 32px;border-radius:6px;">Upgrade Now</a>
+        </div>
+        <p style="margin:0;color:#777;font-size:14px;">Upgrading to a Basic or Pro plan gives you a fresh monthly credit allowance and keeps your Wine Searcher and Cellar Tracker connections active.</p>`,
+    },
+    {
+      type: 'credits_expiry_1d',
+      daysOffset: 1,
+      subject: 'Your Burgundy Bid credits expire tomorrow',
+      body: (name) => `
+        <p style="margin:0 0 12px;">Hi ${name || 'there'},</p>
+        <p style="margin:0 0 20px;color:#555;">This is your final reminder — your Burgundy Bid credits <strong>expire tomorrow</strong>. After that, lookups and AI Image Searches will be blocked until you upgrade.</p>
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${upgradeUrl}" style="display:inline-block;background:#800020;color:#ffffff;text-decoration:none;
+             font-weight:700;font-size:15px;padding:14px 32px;border-radius:6px;">Upgrade Before It's Too Late</a>
+        </div>
+        <p style="margin:0;color:#777;font-size:14px;">Your Wine Searcher and Cellar Tracker connections remain active for 30 days after expiry, giving you time to decide.</p>`,
+    },
+    {
+      type: 'credits_expired_15d',
+      daysOffset: -15,       // credits_expiry_date was 15 days ago
+      subject: 'Your Burgundy Bid connections will be removed in 15 days',
+      body: (name) => `
+        <p style="margin:0 0 12px;">Hi ${name || 'there'},</p>
+        <p style="margin:0 0 20px;color:#555;">Your Burgundy Bid credits expired 15 days ago. If you don't upgrade in the next <strong>15 days</strong>, your Wine Searcher and Cellar Tracker connections will be automatically removed to free up capacity.</p>
+        <div style="text-align:center;margin:28px 0;">
+          <a href="${upgradeUrl}" style="display:inline-block;background:#800020;color:#ffffff;text-decoration:none;
+             font-weight:700;font-size:15px;padding:14px 32px;border-radius:6px;">Reactivate My Account</a>
+        </div>
+        <p style="margin:0;color:#777;font-size:14px;">You can reconnect your accounts at any time after upgrading, but you'll need to re-enter your credentials.</p>`,
+    },
+  ];
+
+  let totalSent = 0;
+
+  for (const notif of notifications) {
+    const isFuture = notif.daysOffset > 0;
+    // Match users whose expiry date falls on exactly this calendar day (UTC).
+    // Using ::date cast so the window is always midnight-to-midnight regardless of run time.
+    const intervalExpr = isFuture
+      ? `credits_expiry_date::date = (CURRENT_DATE + INTERVAL '${notif.daysOffset} days')::date`
+      : `credits_expiry_date::date = (CURRENT_DATE - INTERVAL '${Math.abs(notif.daysOffset)} days')::date`;
+
+    const rows = await pool.query(`
+      SELECT u.id, u.email, u.full_name, u.credits_expiry_date
+      FROM users u
+      WHERE u.is_deleted = false
+        AND u.credits_expiry_date IS NOT NULL
+        AND ${intervalExpr}
+        AND NOT EXISTS (
+          SELECT 1 FROM email_notifications en
+          WHERE en.user_id = u.id
+            AND en.notification_type = $1
+            AND en.reference_date::date = u.credits_expiry_date::date
+        )
+    `, [notif.type]);
+
+    for (const user of rows.rows) {
+      try {
+        const name = user.full_name || user.email.split('@')[0] || 'there';
+        await sendEmail(user.email, notif.subject, emailTemplate(notif.body(name)));
+        await pool.query(
+          `INSERT INTO email_notifications(user_id, notification_type, reference_date)
+           VALUES($1, $2, $3) ON CONFLICT DO NOTHING`,
+          [user.id, notif.type, user.credits_expiry_date]
+        );
+        totalSent++;
+      } catch (e) {
+        console.warn(`[reminders] Failed to send ${notif.type} to ${user.email}:`, e.message);
+      }
+    }
+  }
+
+  return { rowCount: totalSent };
+}
+
+// Remove proxy connections for users whose credits expired more than 30 days ago.
+// Deleting from users_connections is the only place proxy_id is stored, so this
+// fully frees the proxy slot for reassignment to new users.
+async function jobRemoveExpiredConnections() {
+  const r = await pool.query(`
+    DELETE FROM users_connections uc
+    USING users u
+    WHERE uc.user_id = u.id
+      AND u.credits_expiry_date IS NOT NULL
+      AND u.credits_expiry_date < NOW() - INTERVAL '30 days'
+      AND u.is_deleted = false
+  `);
+  if (r.rowCount > 0) {
+    console.log(`[maintenance] remove_expired_connections — freed ${r.rowCount} connection(s)`);
+  }
+  return { rowCount: r.rowCount };
+}
+
 // ── Job registry ──────────────────────────────────────────────────────────────
 const MAINTENANCE_JOB_REGISTRY = {
   soft_delete_old_lookups:       jobSoftDeleteOldLookups,
@@ -744,7 +856,13 @@ const MAINTENANCE_JOB_REGISTRY = {
   purge_expired_refresh_tokens:  jobPurgeExpiredRefreshTokens,
   purge_old_ocr_requests:        jobPurgeOldOcrRequests,
   purge_orphaned_sessions:       jobPurgeOrphanedSessions,
+  purge_old_support_tickets:     jobPurgeOldSupportTickets,
+  purge_old_suggestions:         jobPurgeOldSuggestions,
+  purge_old_contact_submissions: jobPurgeOldContactSubmissions,
+  purge_old_activity_logs:       jobPurgeOldActivityLogs,
   cleanup_stale_connecting:      jobCleanupStaleConnecting,
+  credit_expiry_reminders:       jobCreditExpiryReminders,
+  remove_expired_connections:    jobRemoveExpiredConnections,
 };
 
 // ── Core scheduler ────────────────────────────────────────────────────────────
@@ -839,12 +957,18 @@ setTimeout(async () => {
   try {
     await pool.query(`
       INSERT INTO maintenance_jobs (job_name, interval_hours, next_run_at) VALUES
-        ('soft_delete_old_lookups',       24,  NOW()),
-        ('hard_delete_old_lookups',       24,  NOW()),
-        ('purge_expired_refresh_tokens',  24,  NOW()),
-        ('purge_old_ocr_requests',        168, NOW()),
-        ('purge_orphaned_sessions',       24,  NOW()),
-        ('cleanup_stale_connecting',  1.0/3.0,  NOW())
+        ('soft_delete_old_lookups',         24,      NOW()),
+        ('hard_delete_old_lookups',         24,      NOW()),
+        ('purge_expired_refresh_tokens',    24,      NOW()),
+        ('purge_old_ocr_requests',          168,     NOW()),
+        ('purge_orphaned_sessions',         24,      NOW()),
+        ('purge_old_support_tickets',       168,     NOW()),
+        ('purge_old_suggestions',           168,     NOW()),
+        ('purge_old_contact_submissions',   168,     NOW()),
+        ('purge_old_activity_logs',         168,     NOW()),
+        ('cleanup_stale_connecting',        1.0/3.0, NOW()),
+        ('credit_expiry_reminders',         24,      NOW()),
+        ('remove_expired_connections',      24,      NOW())
       ON CONFLICT (job_name) DO NOTHING
     `);
     // Ensure column can hold fractional hours (idempotent on already-NUMERIC DBs)
