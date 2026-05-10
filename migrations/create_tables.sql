@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS users_connections (
   site_name           TEXT        NOT NULL,
   email               TEXT        NOT NULL,
   password            TEXT,
+  users_connections   TEXT,
   status              TEXT        DEFAULT 'not connected',
   is_connected        BOOLEAN     DEFAULT false,
   is_enabled          BOOLEAN     DEFAULT true,
@@ -82,10 +83,6 @@ CREATE TABLE IF NOT EXISTS users_connections (
   proxy_id            TEXT        REFERENCES proxies(id),
   proxy_assigned_at   TIMESTAMPTZ
 );
-
--- account_username: the CT/WS display name captured at login time, used to
--- detect session mismatches (wrong account active) during lookups.
-ALTER TABLE users_connections ADD COLUMN IF NOT EXISTS account_username TEXT;
 
 CREATE INDEX IF NOT EXISTS users_connections_user_id_idx  ON users_connections(user_id);
 CREATE INDEX IF NOT EXISTS users_connections_proxy_id_idx ON users_connections(proxy_id) WHERE proxy_id IS NOT NULL;
@@ -121,9 +118,6 @@ CREATE TABLE IF NOT EXISTS wine_lookups (
   is_deleted   BOOLEAN     DEFAULT false,
   deleted_date TIMESTAMPTZ
 );
-
--- Add lookup_type to existing databases (idempotent)
-ALTER TABLE wine_lookups ADD COLUMN IF NOT EXISTS lookup_type TEXT;
 
 CREATE INDEX IF NOT EXISTS wine_lookups_batch_id_idx   ON wine_lookups(batch_id);
 CREATE INDEX IF NOT EXISTS wine_lookups_user_id_idx    ON wine_lookups(user_id);
