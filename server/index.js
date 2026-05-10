@@ -303,7 +303,7 @@ function normalizePlan(raw) {
 // Returns { allowed, used, limit, remaining, plan, reason? }
 async function checkLookupLimit(userId, batchSize = 0) {
   try {
-    const uR = await pool.query('SELECT subscription_plan, role_type, bonus_lookup_credits, credits_reset_date FROM users WHERE id=$1', [userId]);
+    const uR = await pool.query('SELECT subscription_plan, role_type, bonus_lookup_credits, credits_reset_date, credits_expiry_date FROM users WHERE id=$1', [userId]);
     if (!uR.rowCount) return { allowed: false, reason: 'User not found', used: 0, limit: 0, remaining: 0, plan: 'free' };
 
     // Admin always gets 99999 lookups, never counted against subscription
@@ -321,6 +321,13 @@ async function checkLookupLimit(userId, batchSize = 0) {
     }
 
     const plan = normalizePlan(uR.rows[0].subscription_plan);
+    const creditsExpiryDate = uR.rows[0].credits_expiry_date;
+
+    // Credits expired — 0 remaining regardless of plan
+    if (creditsExpiryDate && new Date(creditsExpiryDate) < new Date()) {
+      return { allowed: false, reason: 'Your credits have expired. Upgrade to continue using Burgundy Bid.', used: 0, limit: 0, remaining: 0, plan, credits_expired: true, credits_expiry_date: creditsExpiryDate };
+    }
+
     const pR = await pool.query('SELECT monthly_lookup_limit FROM wine_subscriptions WHERE plan_name=$1', [plan]);
     const basePlanLimit = pR.rowCount ? pR.rows[0].monthly_lookup_limit : 20;
     const bonusCredits = parseInt(uR.rows[0].bonus_lookup_credits || 0, 10);
@@ -356,7 +363,7 @@ async function checkLookupLimit(userId, batchSize = 0) {
         : `This batch needs ${batchSize} lookups but only ${remaining} remain this month (${used}/${limit} used on ${plan} plan). Reduce your batch or upgrade.`;
       return { allowed: false, reason, used, limit, remaining, plan };
     }
-    return { allowed: true, used, limit, remaining, plan, bonus_lookup_credits: bonusCredits };
+    return { allowed: true, used, limit, remaining, plan, bonus_lookup_credits: bonusCredits, credits_expiry_date: creditsExpiryDate };
   } catch (e) {
     console.error('checkLookupLimit error', e);
     return { allowed: true, used: 0, limit: 9999, remaining: 9999, plan: 'unknown', bonus_lookup_credits: 0 }; // fail-open on DB errors
@@ -3151,8 +3158,8 @@ app.get('/auth/google/callback', async (req, res) => {
         // Create new user (no password — Google-only account)
         const nameFromEmail = (googleUser.email || '').split('@')[0] || null;
         const result = await pool.query(
-          `INSERT INTO users (full_name, email, google_id, is_email_verified, last_login)
-           VALUES ($1, $2, $3, true, now())
+          `INSERT INTO users (full_name, email, google_id, is_email_verified, last_login, credits_expiry_date)
+           VALUES ($1, $2, $3, true, now(), NOW()+INTERVAL '1 month')
            RETURNING *`,
           [googleUser.name || nameFromEmail, googleUser.email, googleUser.id]
         );
@@ -3217,7 +3224,7 @@ app.post('/auth/signup', authLimiter, async (req, res) => {
     const saveFullName = (full_name && String(full_name).trim()) ? String(full_name).trim() : deriveNameFromEmail(email);
     const verificationCode = crypto.randomBytes(3).toString('hex').toUpperCase();
     const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    const sql = `INSERT INTO users(full_name,email,password,email_verification_code,email_verification_expires) VALUES($1,$2,$3,$4,$5) RETURNING id,created_date,full_name,email,role_type,phone,subscription_plan`;
+    const sql = `INSERT INTO users(full_name,email,password,email_verification_code,email_verification_expires,credits_expiry_date) VALUES($1,$2,$3,$4,$5,NOW()+INTERVAL '1 month') RETURNING id,created_date,full_name,email,role_type,phone,subscription_plan`;
     const newUser = await pool.query(sql, [saveFullName, email, hashed, verificationCode, verificationExpires]);
     logActivity(newUser.rows[0].id, 'signup', { email, full_name: saveFullName, method: 'email' }, req);
     // Send verification email non-blocking
@@ -3718,6 +3725,10 @@ app.get('/plans', async (_req, res) => {
 app.get('/subscription/usage', authMiddleware, async (req, res) => {
   try {
     const check = await checkLookupLimit(req.user.id);
+    const expiryDate = check.credits_expiry_date;
+    const daysUntilExpiry = expiryDate
+      ? Math.ceil((new Date(expiryDate) - new Date()) / (1000 * 60 * 60 * 24))
+      : null;
     return res.json({
       plan: check.plan,
       used: check.used,
@@ -3725,6 +3736,9 @@ app.get('/subscription/usage', authMiddleware, async (req, res) => {
       remaining: check.remaining,
       percent: check.limit > 0 ? Math.round((check.used / check.limit) * 100) : 0,
       bonus_lookup_credits: check.bonus_lookup_credits || 0,
+      credits_expiry_date: expiryDate || null,
+      days_until_expiry: daysUntilExpiry,
+      credits_expired: check.credits_expired || false,
     });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -3735,12 +3749,19 @@ app.get('/subscription/usage', authMiddleware, async (req, res) => {
 app.get('/subscription/ocr-usage', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
-    const uR = await pool.query('SELECT subscription_plan, role_type, bonus_ocr_credits FROM users WHERE id=$1', [userId]);
+    const uR = await pool.query('SELECT subscription_plan, role_type, bonus_ocr_credits, credits_expiry_date FROM users WHERE id=$1', [userId]);
     if (!uR.rowCount) return res.status(404).json({ error: 'User not found' });
     const plan = normalizePlan(uR.rows[0].subscription_plan);
     const isAdmin = uR.rows[0].role_type === 'admin';
     const isFree = plan === 'free';
     const bonusOcr = parseInt(uR.rows[0].bonus_ocr_credits || 0, 10);
+    const creditsExpiryDate = uR.rows[0].credits_expiry_date;
+
+    // Credits expired — report 0 remaining
+    if (!isAdmin && creditsExpiryDate && new Date(creditsExpiryDate) < new Date()) {
+      return res.json({ used: 0, limit: 0, remaining: 0, plan, bonus_ocr_credits: bonusOcr, credits_expired: true, credits_expiry_date: creditsExpiryDate });
+    }
+
     // Free plan: count all-time OCR usage (credits are lifetime, not monthly)
     const usedQuery = (isAdmin || !isFree)
       ? pool.query(
@@ -3758,7 +3779,10 @@ app.get('/subscription/ocr-usage', authMiddleware, async (req, res) => {
     const baseOcrLimit = isAdmin ? 99999 : parseInt(limitR.rows[0]?.monthly_ocr_limit ?? 2, 10);
     const limit = isAdmin ? 99999 : baseOcrLimit + bonusOcr;
     const used  = parseInt(usedR.rows[0].used, 10);
-    res.json({ used, limit, remaining: Math.max(0, limit - used), plan, bonus_ocr_credits: bonusOcr });
+    const daysUntilExpiry = creditsExpiryDate
+      ? Math.ceil((new Date(creditsExpiryDate) - new Date()) / (1000 * 60 * 60 * 24))
+      : null;
+    res.json({ used, limit, remaining: Math.max(0, limit - used), plan, bonus_ocr_credits: bonusOcr, credits_expiry_date: creditsExpiryDate || null, days_until_expiry: daysUntilExpiry });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
@@ -3898,7 +3922,7 @@ app.post('/stripe/webhook', async (req, res) => {
 
     await pool.query(
       `UPDATE users SET subscription_plan=$1, subscription_started=now(), subscription_ended=null,
-       credits_reset_date=now(), subscription_renewal_date=$3, subscription_id=$4 WHERE id=$2`,
+       credits_reset_date=now(), credits_expiry_date=null, subscription_renewal_date=$3, subscription_id=$4 WHERE id=$2`,
       [plan, userId, renewalDate, stripeSubId]
     );
     console.log(`[Stripe] Subscription activated: user=${userId} plan=${plan} interval=${billingInterval}`);
@@ -3953,7 +3977,7 @@ app.post('/stripe/webhook', async (req, res) => {
       const r = await pool.query('SELECT id FROM users WHERE stripe_customer_id=$1', [sub.customer]);
       if (r.rowCount) {
         await pool.query(
-          `UPDATE users SET subscription_plan='free', subscription_ended=now() WHERE id=$1`,
+          `UPDATE users SET subscription_plan='free', subscription_ended=now(), credits_expiry_date=now() WHERE id=$1`,
           [r.rows[0].id]
         );
         console.log(`[Stripe] Subscription cancelled for user ${r.rows[0].id}`);
@@ -4052,7 +4076,7 @@ app.get('/stripe/verify-session', authMiddleware, async (req, res) => {
 
       await pool.query(
         `UPDATE users SET subscription_plan=$1, subscription_started=now(), subscription_ended=null,
-         credits_reset_date=now(), subscription_renewal_date=$3, subscription_id=$4 WHERE id=$2`,
+         credits_reset_date=now(), credits_expiry_date=null, subscription_renewal_date=$3, subscription_id=$4 WHERE id=$2`,
         [plan, userId, renewalDate, confirmedSubId]
       );
     }

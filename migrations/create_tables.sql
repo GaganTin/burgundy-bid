@@ -39,7 +39,10 @@ CREATE TABLE IF NOT EXISTS users (
   bonus_lookup_credits        INTEGER     NOT NULL DEFAULT 0,
   bonus_ocr_credits           INTEGER     NOT NULL DEFAULT 0,
   -- subscription identifier: fixed UUID per plan type (free / admin) or Stripe sub ID for paid plans
-  subscription_id             UUID        DEFAULT '59e54410-bedd-4429-8ad4-8982fafa99a2'
+  subscription_id             UUID        DEFAULT '59e54410-bedd-4429-8ad4-8982fafa99a2',
+  -- credits_expiry_date: NULL for active paid plans; set for free plan (created_date + 1 month)
+  -- and for cancelled paid plans (set to NOW() when subscription ends → 0 credits).
+  credits_expiry_date         TIMESTAMPTZ
 );
 
 -- ── proxies ───────────────────────────────────────────────────────────────────

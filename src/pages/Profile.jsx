@@ -743,9 +743,11 @@ export default function Profile() {
                           style={{ width: `${monthlyPct}%` }} />
                       </div>
                       <p className="text-xs text-gray-400 mt-1">
-                        {monthlyCount >= MONTHLY_LIMIT
-                          ? <span className="text-red-500">Monthly limit reached. Upgrade to continue.</span>
-                          : `${Math.max(0, MONTHLY_LIMIT - monthlyCount)} lookups remaining`}
+                        {usage?.credits_expired
+                          ? <span className="text-red-500">Credits expired. Upgrade to continue.</span>
+                          : monthlyCount >= MONTHLY_LIMIT
+                            ? <span className="text-red-500">Limit reached. Upgrade to continue.</span>
+                            : `${Math.max(0, MONTHLY_LIMIT - monthlyCount)} lookups remaining`}
                       </p>
                     </div>
                     {/* AI Image Search */}
@@ -768,9 +770,11 @@ export default function Profile() {
                                 style={{ width: `${Math.min((ocrUsage.used / ocrUsage.limit) * 100, 100)}%` }} />
                             </div>
                             <p className="text-xs text-gray-400 mt-1">
-                              {ocrUsage.remaining === 0
-                                ? <span className="text-red-500">No credits remaining. Upgrade to continue using AI Image Search.</span>
-                                : `${ocrUsage.remaining} credits remaining`}
+                              {ocrUsage.credits_expired
+                                ? <span className="text-red-500">Credits expired. Upgrade to continue.</span>
+                                : ocrUsage.remaining === 0
+                                  ? <span className="text-red-500">No credits remaining. Upgrade to continue using AI Image Search.</span>
+                                  : `${ocrUsage.remaining} credits remaining`}
                             </p>
                           </>
                         ) : (
@@ -778,6 +782,44 @@ export default function Profile() {
                         )}
                       </div>
                     )}
+                    {/* Credits expiry warning */}
+                    {usage?.credits_expiry_date && (() => {
+                      const days = usage.days_until_expiry;
+                      if (usage.credits_expired) {
+                        return (
+                          <div className="flex items-start gap-2.5 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-3.5 py-3">
+                            <XCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                            <div>
+                              <p className="text-sm font-medium text-red-700 dark:text-red-400">Credits expired</p>
+                              <p className="text-xs text-red-500 dark:text-red-500 mt-0.5">Your free credits expired on {new Date(usage.credits_expiry_date).toLocaleDateString()}. <button className="underline font-medium" onClick={() => setActiveTab('billing')}>Upgrade</button> to continue using Burgundy Bid.</p>
+                            </div>
+                          </div>
+                        );
+                      }
+                      if (days !== null && days <= 7) {
+                        return (
+                          <div className="flex items-start gap-2.5 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-3.5 py-3">
+                            <AlertTriangle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                            <div>
+                              <p className="text-sm font-medium text-red-700 dark:text-red-400">Credits expire in {days <= 0 ? 'less than a day' : `${days} day${days === 1 ? '' : 's'}`}</p>
+                              <p className="text-xs text-red-500 dark:text-red-500 mt-0.5">Your credits expire on {new Date(usage.credits_expiry_date).toLocaleDateString()}. <button className="underline font-medium" onClick={() => setActiveTab('billing')}>Upgrade</button> to keep access.</p>
+                            </div>
+                          </div>
+                        );
+                      }
+                      if (days !== null && days <= 30) {
+                        return (
+                          <div className="flex items-start gap-2.5 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3.5 py-3">
+                            <Calendar className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                            <div>
+                              <p className="text-sm font-medium text-amber-700 dark:text-amber-400">Credits expire in {days} day{days === 1 ? '' : 's'}</p>
+                              <p className="text-xs text-amber-600 dark:text-amber-500 mt-0.5">Use your credits before {new Date(usage.credits_expiry_date).toLocaleDateString()} or <button className="underline font-medium" onClick={() => setActiveTab('billing')}>upgrade</button> to continue.</p>
+                            </div>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
                   </CardContent>
                 </Card>
 

@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS users (
   google_id                   TEXT UNIQUE,
   bonus_lookup_credits        INTEGER     NOT NULL DEFAULT 0,
   bonus_ocr_credits           INTEGER     NOT NULL DEFAULT 0,
-  subscription_id             UUID        DEFAULT '59e54410-bedd-4429-8ad4-8982fafa99a2'
+  subscription_id             UUID        DEFAULT '59e54410-bedd-4429-8ad4-8982fafa99a2',
+  credits_expiry_date         TIMESTAMPTZ
 );
 
 -- ── proxies ───────────────────────────────────────────────────────────────────
