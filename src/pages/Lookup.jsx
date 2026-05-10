@@ -825,7 +825,7 @@ export default function Lookup() {
             {activeTab === 'single' && (
               <>
                 <h3 className="text-sm font-serif font-semibold text-gray-700 dark:text-gray-300 mb-0.5">Single Search - Previous Results</h3>
-                <p className="text-xs text-gray-400 dark:text-gray-500 mb-2">Basic &amp; Pro: History kept for 6 months.</p>
+                <p className="text-xs text-gray-400 dark:text-gray-500 mb-2">History kept for 6 months.</p>
                 {(singleHistory && singleHistory.length > 0) ? (
                   <BatchHistorySection
                     batches={singleHistory}
@@ -849,7 +849,7 @@ export default function Lookup() {
             {activeTab === 'paste' && (
               <>
                 <h3 className="text-sm font-serif font-semibold text-gray-700 dark:text-gray-300 mb-0.5">Paste List - Previous Results</h3>
-                <p className="text-xs text-gray-400 dark:text-gray-500 mb-2">Basic &amp; Pro: History kept for 6 months.</p>
+                <p className="text-xs text-gray-400 dark:text-gray-500 mb-2">History kept for 6 months.</p>
                 {(pasteHistory && pasteHistory.length > 0) ? (
                   <BatchHistorySection
                     batches={pasteHistory}
@@ -873,7 +873,7 @@ export default function Lookup() {
             {activeTab === 'image' && (
               <>
                 <h3 className="text-sm font-serif font-semibold text-gray-700 dark:text-gray-300 mb-0.5">AI Image Search - Previous Results</h3>
-                <p className="text-xs text-gray-400 dark:text-gray-500 mb-2">Basic &amp; Pro: History kept for 6 months.</p>
+                <p className="text-xs text-gray-400 dark:text-gray-500 mb-2">History kept for 6 months.</p>
                 {(imageHistory && imageHistory.length > 0) ? (
                   <BatchHistorySection
                     batches={imageHistory}
@@ -897,7 +897,7 @@ export default function Lookup() {
             {activeTab === 'upload' && (
               <>
                 <h3 className="text-sm font-serif font-semibold text-gray-700 dark:text-gray-300 mb-0.5">Upload File - Previous Results</h3>
-                <p className="text-xs text-gray-400 dark:text-gray-500 mb-2">Basic &amp; Pro: History kept for 6 months.</p>
+                <p className="text-xs text-gray-400 dark:text-gray-500 mb-2">History kept for 6 months.</p>
                 {(uploadHistory && uploadHistory.length > 0) ? (
                   <BatchHistorySection
                     batches={uploadHistory}

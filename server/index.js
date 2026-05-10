@@ -576,19 +576,13 @@ setInterval(() => {
 
 // ── Individual job functions ──────────────────────────────────────────────────
 
-// Soft-delete wine_lookups older than 6 months for basic/pro users.
-// Free plan data is never automatically deleted (kept forever).
+// Soft-delete wine_lookups older than 6 months for all plans (free, basic, pro).
 async function jobSoftDeleteOldLookups() {
   const r = await pool.query(`
     UPDATE wine_lookups wl
     SET is_deleted = true, deleted_date = NOW()
     WHERE wl.is_deleted IS NOT TRUE
       AND wl.created_date < NOW() - INTERVAL '6 months'
-      AND EXISTS (
-        SELECT 1 FROM users u
-        WHERE u.id = wl.user_id
-          AND (u.subscription_plan ILIKE 'basic%' OR u.subscription_plan ILIKE 'pro%')
-      )
   `);
   return { rowCount: r.rowCount };
 }
