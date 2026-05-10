@@ -22,5 +22,5 @@ jobs:
             git fetch origin
             git reset --hard origin/staging
             npm ci --omit=dev
-            node scripts/migrate.js
+            node --env-file=.env.staging scripts/migrate.js
             pm2 reload burgundy-bid-staging --update-env
