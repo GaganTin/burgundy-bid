@@ -776,7 +776,7 @@ async function jobCreditExpiryReminders() {
       subject: 'Your Burgundy Bid credits expire tomorrow',
       body: (name, expiryDate) => `
         <p style="margin:0 0 12px;">Hi ${name || 'there'},</p>
-        <p style="margin:0 0 20px;color:#555;">This is your final reminder — your Burgundy Bid credits expire <strong>tomorrow, ${formatEmailDate(expiryDate)}</strong>. After that, lookups and AI Image Searches will be blocked until you upgrade.</p>
+        <p style="margin:0 0 20px;color:#555;">This is your final reminder - your Burgundy Bid credits expire <strong>tomorrow, ${formatEmailDate(expiryDate)}</strong>. After that, lookups and AI Image Searches will be blocked until you upgrade.</p>
         <div style="text-align:center;margin:28px 0;">
           <a href="${upgradeUrl}" style="display:inline-block;background:#800020;color:#ffffff;text-decoration:none;
              font-weight:700;font-size:15px;padding:14px 32px;border-radius:6px;">Upgrade Before It's Too Late</a>
@@ -827,7 +827,7 @@ async function jobCreditExpiryReminders() {
 
     for (const user of rows.rows) {
       try {
-        const name = user.full_name || user.email.split('@')[0] || 'there';
+        const name = user.full_name || 'there';
         await sendEmail(user.email, notif.subject, emailTemplate(notif.body(name, user.credits_expiry_date)));
         await pool.query(
           `INSERT INTO email_notifications(user_id, notification_type, reference_date)

@@ -211,7 +211,7 @@ export default function WineInput({ onWinesSubmit, isLoading, onTabChange, looku
                 className="w-full sm:w-auto h-11 px-6 bg-[#800020] hover:bg-[#6b001b] text-white font-medium whitespace-nowrap">
                 <Search className="w-4 h-4 mr-2" /> Look Up
               </Button>
-              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">Prices load in ~30-60 sec</p>
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">Prices load in ~30-60 secs</p>
             </div>
           </div>
         </TabsContent>
