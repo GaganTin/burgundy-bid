@@ -1358,13 +1358,24 @@ export default function Profile() {
                 </div>
               )}
 
+              {/* Reward callout */}
+              <div className="flex items-center gap-3 bg-[#800020]/5 dark:bg-[#800020]/10 border border-[#800020]/20 rounded-xl px-4 py-3">
+                <Gift className="w-5 h-5 text-[#800020] flex-shrink-0" />
+                <p className="text-xs text-gray-700 dark:text-gray-300">
+                  Each friend who purchases a plan earns you a ticket with{' '}
+                  <span className="font-semibold text-gray-900 dark:text-white">1,000 lookup credits</span>
+                  {' '}and{' '}
+                  <span className="font-semibold text-gray-900 dark:text-white">100 AI OCR credits</span>.
+                </p>
+              </div>
+
               {/* How it works */}
               <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4 space-y-2">
                 <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">How it works</p>
                 {[
                   'Share your link with a friend',
                   'They sign up and purchase any plan',
-                  'You receive a ticket in your Gift Box',
+                  'You receive a ticket with 1,000 lookup + 100 AI OCR credits',
                   'Apply the ticket any month within a year',
                   'Credits are active until end of that month',
                 ].map((step, i) => (
