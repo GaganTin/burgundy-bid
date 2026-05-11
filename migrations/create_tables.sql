@@ -51,18 +51,22 @@ CREATE TABLE IF NOT EXISTS users (
 -- Synced on server startup and daily via syncProxies() in server/proxy.js.
 -- Password is AES-256-GCM encrypted using CONN_ENC_KEY.
 -- Max 3 distinct user_ids share one proxy (enforced in application code).
+-- reserved_for_user_id: if set, this proxy is exclusively assigned to that user
+-- and is invisible to the general pool assignment logic.
 CREATE TABLE IF NOT EXISTS proxies (
-  id            TEXT        PRIMARY KEY,
-  proxy_address TEXT        NOT NULL,
-  http_port     INTEGER     NOT NULL,
-  socks5_port   INTEGER,
-  username      TEXT        NOT NULL,
-  password_enc  TEXT        NOT NULL,
-  country_code  TEXT,
-  city_name     TEXT,
-  valid         BOOLEAN     NOT NULL DEFAULT true,
-  synced_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+  id                   TEXT        PRIMARY KEY,
+  proxy_address        TEXT        NOT NULL,
+  http_port            INTEGER     NOT NULL,
+  socks5_port          INTEGER,
+  username             TEXT        NOT NULL,
+  password_enc         TEXT        NOT NULL,
+  country_code         TEXT,
+  city_name            TEXT,
+  valid                BOOLEAN     NOT NULL DEFAULT true,
+  synced_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  reserved_for_user_id UUID        REFERENCES users(id)
 );
+ALTER TABLE proxies ADD COLUMN IF NOT EXISTS reserved_for_user_id UUID REFERENCES users(id);
 
 -- ── users_connections ─────────────────────────────────────────────────────────
 -- Stores credentials for external wine sites (CellarTracker, Wine-Searcher).

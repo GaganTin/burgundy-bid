@@ -124,7 +124,8 @@ export async function syncProxies(pool) {
          username      = EXCLUDED.username,
          password_enc  = EXCLUDED.password_enc,
          valid         = EXCLUDED.valid,
-         synced_at     = now()`,
+         synced_at     = now()
+         -- reserved_for_user_id is intentionally excluded: sync must never clear a reservation`,
       [
         String(p.id),
         p.proxy_address,
@@ -148,6 +149,8 @@ export async function syncProxies(pool) {
 //   - One user always gets the same proxy (idempotent).
 //   - A proxy is shared by at most 3 distinct user_ids.
 //   - Both CT and WS connections for the same user share one proxy.
+//   - If a proxy is reserved for a specific user, only that user can use it
+//     and it is excluded from the general pool.
 export async function assignProxyToUser(pool, userId) {
   // Already assigned — reuse.
   const existing = await pool.query(
@@ -156,18 +159,27 @@ export async function assignProxyToUser(pool, userId) {
   );
   if (existing.rows[0]?.proxy_id) return existing.rows[0].proxy_id;
 
+  // Check if there is a proxy reserved exclusively for this user.
+  const reserved = await pool.query(
+    `SELECT id FROM proxies WHERE reserved_for_user_id = $1 AND valid = true LIMIT 1`,
+    [userId]
+  );
+  if (reserved.rows[0]) return reserved.rows[0].id;
+
   // Find the valid proxy with the fewest users that still has room.
+  // Exclude proxies reserved for other users so they never enter the general pool.
   const avail = await pool.query(`
     SELECT   p.id,
              COUNT(DISTINCT uc.user_id) AS user_count
     FROM     proxies p
     LEFT JOIN users_connections uc ON uc.proxy_id = p.id
     WHERE    p.valid = true
+      AND   (p.reserved_for_user_id IS NULL OR p.reserved_for_user_id = $1)
     GROUP BY p.id
     HAVING   COUNT(DISTINCT uc.user_id) < 3
     ORDER BY user_count ASC, p.id ASC
     LIMIT    1
-  `);
+  `, [userId]);
 
   if (!avail.rows[0]) {
     throw new Error('No proxy capacity available — all proxies are fully assigned (3 users each). Please purchase additional proxies from Webshare.');
