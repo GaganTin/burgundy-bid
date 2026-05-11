@@ -323,6 +323,7 @@ export default function Lookup() {
 
       const esUrl = `${base}/lookup/${batchId}/stream${token ? `?access_token=${encodeURIComponent(token)}` : ''}`;
       const es = new EventSource(esUrl);
+      let refreshTimer = null;
       es.onmessage = (ev) => {
         try {
           const d = JSON.parse(ev.data);
@@ -333,7 +334,13 @@ export default function Lookup() {
             cur.currentWine = msg;
             return { ...(prev || {}), [tab]: cur };
           });
+          // Refresh the result table incrementally as each wine completes
+          if (/^Updated/i.test(msg)) {
+            clearTimeout(refreshTimer);
+            refreshTimer = setTimeout(() => queryClient.invalidateQueries({ queryKey: qKey }), 1500);
+          }
           if (/finished/i.test(msg)) {
+            clearTimeout(refreshTimer);
             es.close();
             setIsLookingByTab(prev => ({ ...(prev || {}), [tab]: false }));
             setLookupProgressByTab(prev => { const np = { ...(prev || {}) }; delete np[tab]; return np; });
