@@ -16,6 +16,15 @@ export default function GuideModal({ open, onOpenChange, title, pages }) {
 
   useEffect(() => { if (open) setStep(0); }, [open]);
 
+  // Preload all guide images when the modal opens so page navigation is instant
+  useEffect(() => {
+    if (!open) return;
+    pages.forEach(page => {
+      const srcs = page.images?.length ? page.images : page.image ? [page.image] : [];
+      srcs.forEach(src => { new Image().src = src; });
+    });
+  }, [open]);
+
   if (!pages.length) return null;
   const page  = pages[step];
   const total = pages.length;

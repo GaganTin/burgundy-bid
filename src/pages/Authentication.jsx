@@ -85,6 +85,12 @@ export default function AuthPreview() {
     if (m && ['signin', 'signup', 'forgot', 'reset', 'verify'].includes(m)) setMode(m);
   }, [searchParams]);
 
+  // Persist referral code from URL into localStorage so it survives navigation
+  useEffect(() => {
+    const ref = searchParams.get('ref');
+    if (ref) localStorage.setItem('pending_referral_code', ref.trim().toUpperCase());
+  }, [searchParams]);
+
   const navigate = useNavigate();
   const { refreshAuthFromLocal, isAuthenticated } = useAuth();
 
@@ -583,7 +589,12 @@ export default function AuthPreview() {
                 return;
               }
               const url = `${API_BASE}/auth/${mode === 'signin' ? 'signin' : 'signup'}`;
-              const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ full_name: fullName, email, password }) });
+              const signupBody = { full_name: fullName, email, password };
+              if (mode === 'signup') {
+                const pendingRef = localStorage.getItem('pending_referral_code');
+                if (pendingRef) signupBody.referral_code = pendingRef;
+              }
+              const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(signupBody) });
               const json = await res.json();
               if (!res.ok) {
                 if (mode === 'signin' && json?.email_not_verified) {
@@ -608,6 +619,7 @@ export default function AuthPreview() {
               }
               if (mode === 'signup' && json.verification_required) {
                 // Email verification required — don't issue JWT yet
+                localStorage.removeItem('pending_referral_code');
                 setPendingEmail(json.email || email);
                 setVerifyCode("");
                 setVerifyDone(false);

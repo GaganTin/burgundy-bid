@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { User, Trash2, Lock, Moon, Sun, ChevronDown, ChevronUp, BarChart2, Save, ArrowUpCircle, Settings, HeadphonesIcon, Lightbulb, Plus, CheckCircle2, CreditCard, Receipt, ExternalLink, ShieldCheck, ImageIcon, Calendar, RefreshCw, XCircle, AlertTriangle, Wallet } from "lucide-react";
+import { User, Trash2, Lock, Moon, Sun, ChevronDown, ChevronUp, BarChart2, Save, ArrowUpCircle, Settings, HeadphonesIcon, Lightbulb, Plus, CheckCircle2, CreditCard, Receipt, ExternalLink, ShieldCheck, ImageIcon, Calendar, RefreshCw, XCircle, AlertTriangle, Wallet, Gift, Copy, Check, X, Ticket } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import SubscriptionPlans from "@/components/SubscriptionPlans";
 import { Switch } from "@/components/ui/switch";
@@ -548,6 +548,15 @@ export default function Profile() {
   const [cancelling, setCancelling] = useState(false);
   const [billingMessage, setBillingMessage] = useState('');
 
+  // Referral gift box state
+  const [showGiftBox, setShowGiftBox] = useState(false);
+  const [referralStats, setReferralStats] = useState(null);
+  const [referralTickets, setReferralTickets] = useState([]);
+  const [referralLoading, setReferralLoading] = useState(false);
+  const [applyingTicketId, setApplyingTicketId] = useState(null);
+  const [applyError, setApplyError] = useState(null);
+  const [copied, setCopied] = useState(false);
+
   const loadInvoices = () => {
     const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
     const token = localStorage.getItem('app_access_token');
@@ -564,6 +573,54 @@ export default function Profile() {
     setSubDetailsLoading(true);
     fetch(`${API}/subscription/details`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.json()).then(setSubDetails).catch(() => {}).finally(() => setSubDetailsLoading(false));
+  };
+
+  const loadReferralData = async () => {
+    const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+    const token = localStorage.getItem('app_access_token');
+    if (!token) return;
+    setReferralLoading(true);
+    setApplyError(null);
+    try {
+      const [statsRes, ticketsRes] = await Promise.all([
+        fetch(`${API}/referrals/stats`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${API}/referrals/tickets`, { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+      if (statsRes.ok)   setReferralStats(await statsRes.json());
+      if (ticketsRes.ok) setReferralTickets(await ticketsRes.json());
+    } catch (e) {
+      console.warn('loadReferralData failed', e);
+    } finally {
+      setReferralLoading(false);
+    }
+  };
+
+  const applyTicket = async (ticketId) => {
+    const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+    const token = localStorage.getItem('app_access_token');
+    setApplyingTicketId(ticketId);
+    setApplyError(null);
+    try {
+      const res = await fetch(`${API}/referrals/tickets/${ticketId}/apply`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to apply ticket');
+      await loadReferralData();
+    } catch (e) {
+      setApplyError(e.message);
+    } finally {
+      setApplyingTicketId(null);
+    }
+  };
+
+  const copyReferralLink = () => {
+    if (!referralStats?.referral_code) return;
+    const link = `${window.location.origin}/Authentication?mode=signup&ref=${referralStats.referral_code}`;
+    navigator.clipboard.writeText(link).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
   };
 
   const handleCancelSubscription = async () => {
@@ -712,17 +769,29 @@ export default function Profile() {
                         </CardTitle>
                         <CardDescription>Your monthly usage this billing period</CardDescription>
                       </div>
-                      {isUpgradable ? (
-                        <Button size="sm" className="bg-[#800020] hover:bg-[#6b001b] text-white gap-1.5"
-                          onClick={() => setActiveTab('billing')}>
-                          <ArrowUpCircle className="w-3.5 h-3.5" /> Upgrade Plan
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" variant="outline"
+                          className="gap-1.5 border-gray-200 dark:border-gray-700 dark:text-gray-300 relative"
+                          onClick={() => { setShowGiftBox(true); loadReferralData(); }}>
+                          <Gift className="w-3.5 h-3.5" /> Gift Box
+                          {referralStats && referralStats.available_tickets > 0 && (
+                            <span className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-[#800020] text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+                              {referralStats.available_tickets}
+                            </span>
+                          )}
                         </Button>
-                      ) : (
-                        <Button size="sm" variant="outline" className="gap-1.5 border-gray-200 dark:border-gray-700 dark:text-gray-300"
-                          onClick={() => setActiveTab('billing')}>
-                          <Settings className="w-3.5 h-3.5" /> Manage Subscription
-                        </Button>
-                      )}
+                        {isUpgradable ? (
+                          <Button size="sm" className="bg-[#800020] hover:bg-[#6b001b] text-white gap-1.5"
+                            onClick={() => setActiveTab('billing')}>
+                            <ArrowUpCircle className="w-3.5 h-3.5" /> Upgrade Plan
+                          </Button>
+                        ) : (
+                          <Button size="sm" variant="outline" className="gap-1.5 border-gray-200 dark:border-gray-700 dark:text-gray-300"
+                            onClick={() => setActiveTab('billing')}>
+                            <Settings className="w-3.5 h-3.5" /> Manage Subscription
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-5">
@@ -1235,6 +1304,152 @@ export default function Profile() {
           </div>
         </div>
       </div>
+
+      {/* ── Gift Box modal ─────────────────────────────────────────────────── */}
+      {showGiftBox && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800">
+              <div className="flex items-center gap-2">
+                <Gift className="w-5 h-5 text-[#800020]" />
+                <h2 className="font-semibold text-gray-900 dark:text-white">Referral Gift Box</h2>
+              </div>
+              <button onClick={() => setShowGiftBox(false)}
+                className="w-7 h-7 rounded-full flex items-center justify-center text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto flex-1 px-6 py-5 space-y-5">
+              {/* Referral link */}
+              <div>
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">Your Referral Link</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+                  Share this link. When a friend signs up and purchases any plan, you earn a bonus credit ticket.
+                </p>
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 bg-gray-50 dark:bg-gray-800 rounded-lg px-3 py-2 text-xs font-mono text-gray-700 dark:text-gray-300 truncate border border-gray-200 dark:border-gray-700">
+                    {referralStats?.referral_code
+                      ? `${window.location.origin}/Authentication?mode=signup&ref=${referralStats.referral_code}`
+                      : '—'}
+                  </div>
+                  <Button size="sm" variant="outline"
+                    className="h-8 px-3 gap-1.5 border-gray-200 dark:border-gray-700 dark:text-gray-300 flex-shrink-0"
+                    onClick={copyReferralLink} disabled={!referralStats?.referral_code}>
+                    {copied ? <><Check className="w-3.5 h-3.5 text-emerald-600" /> Copied</> : <><Copy className="w-3.5 h-3.5" /> Copy</>}
+                  </Button>
+                </div>
+              </div>
+
+              {/* Stats row */}
+              {referralStats && (
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { label: 'Referred',    value: referralStats.total_referred },
+                    { label: 'Subscribed',  value: referralStats.total_converted },
+                    { label: 'Available',   value: referralStats.available_tickets, color: referralStats.available_tickets > 0 ? 'text-[#800020]' : '' },
+                  ].map(s => (
+                    <div key={s.label} className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 text-center">
+                      <p className={`text-xl font-bold ${s.color || 'text-gray-900 dark:text-white'}`}>{s.value}</p>
+                      <p className="text-[10px] text-gray-400 mt-0.5">{s.label}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* How it works */}
+              <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4 space-y-2">
+                <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">How it works</p>
+                {[
+                  'Share your link with a friend',
+                  'They sign up and purchase any plan',
+                  'You receive a ticket in your Gift Box',
+                  'Apply the ticket any month within a year',
+                  'Credits are active until end of that month',
+                ].map((step, i) => (
+                  <div key={i} className="flex items-start gap-2">
+                    <span className="w-4 h-4 rounded-full bg-[#800020]/10 text-[#800020] text-[10px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5">{i + 1}</span>
+                    <p className="text-xs text-gray-600 dark:text-gray-400">{step}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Tickets list */}
+              <div>
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">
+                  Your Tickets
+                </p>
+                {referralLoading ? (
+                  <div className="flex justify-center py-6">
+                    <div className="w-5 h-5 border-2 border-gray-200 border-t-[#800020] rounded-full animate-spin" />
+                  </div>
+                ) : referralTickets.length === 0 ? (
+                  <p className="text-sm text-gray-400 text-center py-4">No tickets yet. Start referring friends!</p>
+                ) : (
+                  <div className="space-y-2.5">
+                    {referralTickets.map(ticket => {
+                      const isAvailable = ticket.status === 'available';
+                      const isActive    = ticket.status === 'active';
+                      const isExpired   = ticket.status === 'expired';
+                      const expiresDate = new Date(isActive ? ticket.applies_until : ticket.expires_at);
+                      const daysLeft    = Math.ceil((expiresDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                      const applying    = applyingTicketId === ticket.id;
+
+                      return (
+                        <div key={ticket.id}
+                          className={`rounded-xl border p-4 ${isExpired ? 'border-gray-100 dark:border-gray-800 opacity-50' : isActive ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50/40 dark:bg-emerald-900/10' : 'border-gray-200 dark:border-gray-700'}`}>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                                <Ticket className="w-3.5 h-3.5 text-[#800020] flex-shrink-0" />
+                                <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                                  {ticket.lookup_credits.toLocaleString()} lookups + {ticket.ocr_credits} AI credits
+                                </span>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
+                                  isActive   ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400' :
+                                  isExpired  ? 'bg-gray-100 dark:bg-gray-800 text-gray-400' :
+                                               'bg-amber-50 text-amber-700 border border-amber-200'
+                                }`}>
+                                  {isActive ? 'Active' : isExpired ? 'Expired' : 'Available'}
+                                </span>
+                              </div>
+                              <p className="text-xs text-gray-400">
+                                Earned {new Date(ticket.earned_at).toLocaleDateString()} ·{' '}
+                                {isExpired
+                                  ? 'Expired'
+                                  : isActive
+                                    ? `Active until ${expiresDate.toLocaleDateString()} (${Math.max(0, daysLeft)}d left)`
+                                    : `Expires ${expiresDate.toLocaleDateString()} (${Math.max(0, daysLeft)}d left)`}
+                              </p>
+                            </div>
+                            {isAvailable && (
+                              <Button size="sm"
+                                className="h-7 text-xs bg-[#800020] hover:bg-[#6b001b] text-white flex-shrink-0"
+                                onClick={() => applyTicket(ticket.id)}
+                                disabled={applying}>
+                                {applying ? 'Applying…' : 'Apply'}
+                              </Button>
+                            )}
+                          </div>
+                          {isActive && (
+                            <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-2 font-medium">
+                              Credits are active — use them before end of this month
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {applyError && (
+                  <p className="text-xs text-red-500 mt-2">{applyError}</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -407,3 +407,34 @@ CREATE TABLE IF NOT EXISTS user_column_settings (
   calc_columns JSONB       NOT NULL DEFAULT '[]',
   updated_date TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ── Referral program ──────────────────────────────────────────────────────────
+ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR(12) UNIQUE;
+
+CREATE TABLE IF NOT EXISTS referrals (
+  id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  referrer_id  UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  referred_id  UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  converted_at TIMESTAMPTZ,
+  UNIQUE(referred_id)
+);
+
+CREATE INDEX IF NOT EXISTS referrals_referrer_idx ON referrals(referrer_id);
+CREATE INDEX IF NOT EXISTS referrals_referred_idx ON referrals(referred_id);
+
+CREATE TABLE IF NOT EXISTS referral_tickets (
+  id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id        UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  referral_id    UUID        REFERENCES referrals(id) ON DELETE SET NULL,
+  lookup_credits INT         NOT NULL DEFAULT 1000,
+  ocr_credits    INT         NOT NULL DEFAULT 100,
+  earned_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at     TIMESTAMPTZ NOT NULL,
+  applied_at     TIMESTAMPTZ,
+  applies_until  TIMESTAMPTZ,
+  status         VARCHAR(20) NOT NULL DEFAULT 'available'
+);
+
+CREATE INDEX IF NOT EXISTS referral_tickets_user_status_idx ON referral_tickets(user_id, status);
+CREATE INDEX IF NOT EXISTS referral_tickets_expires_idx     ON referral_tickets(expires_at);

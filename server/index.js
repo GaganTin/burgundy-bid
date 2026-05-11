@@ -299,6 +299,57 @@ function normalizePlan(raw) {
   return s;
 }
 
+// ── Referral helpers ──────────────────────────────────────────────────────────
+function generateReferralCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 8; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
+
+async function generateUniqueReferralCode() {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const code = generateReferralCode();
+    const exists = await pool.query('SELECT id FROM users WHERE referral_code=$1', [code]);
+    if (!exists.rowCount) return code;
+  }
+  throw new Error('Could not generate unique referral code after 10 attempts');
+}
+
+async function expireStaleTickets(userId) {
+  try {
+    await pool.query(
+      `UPDATE referral_tickets
+       SET status = 'expired'
+       WHERE user_id = $1
+         AND ((status = 'available' AND expires_at < now())
+              OR  (status = 'active'    AND applies_until < now()))`,
+      [userId]
+    );
+  } catch (e) {
+    console.warn('[referral] expireStaleTickets failed (non-fatal):', e.message);
+  }
+}
+
+async function getActiveTicketCredits(userId) {
+  try {
+    const r = await pool.query(
+      `SELECT
+         COALESCE(SUM(lookup_credits), 0) AS lookup,
+         COALESCE(SUM(ocr_credits),    0) AS ocr
+       FROM referral_tickets
+       WHERE user_id = $1 AND status = 'active' AND applies_until > now()`,
+      [userId]
+    );
+    return {
+      lookup: parseInt(r.rows[0]?.lookup || 0, 10),
+      ocr:    parseInt(r.rows[0]?.ocr    || 0, 10),
+    };
+  } catch (e) {
+    return { lookup: 0, ocr: 0 };
+  }
+}
+
 // Check whether userId has capacity for `batchSize` more lookups this calendar month.
 // Returns { allowed, used, limit, remaining, plan, reason? }
 async function checkLookupLimit(userId, batchSize = 0) {
@@ -342,8 +393,9 @@ async function checkLookupLimit(userId, batchSize = 0) {
 
     const pR = await pool.query('SELECT monthly_lookup_limit FROM wine_subscriptions WHERE plan_name=$1', [plan]);
     const basePlanLimit = pR.rowCount ? pR.rows[0].monthly_lookup_limit : 20;
-    const bonusCredits = parseInt(uR.rows[0].bonus_lookup_credits || 0, 10);
-    const limit = basePlanLimit + bonusCredits;
+    const bonusCredits  = parseInt(uR.rows[0].bonus_lookup_credits || 0, 10);
+    const ticketCredits = await getActiveTicketCredits(userId);
+    const limit = basePlanLimit + bonusCredits + ticketCredits.lookup;
     const isFree = plan === 'free';
 
     // Free plan: count all-time lookups (credits are lifetime, not monthly).
@@ -375,7 +427,7 @@ async function checkLookupLimit(userId, batchSize = 0) {
         : `This batch needs ${batchSize} lookups but only ${remaining} remain this month (${used}/${limit} used on ${plan} plan). Reduce your batch or upgrade.`;
       return { allowed: false, reason, used, limit, remaining, plan };
     }
-    return { allowed: true, used, limit, remaining, plan, bonus_lookup_credits: bonusCredits, credits_expiry_date: creditsExpiryDate };
+    return { allowed: true, used, limit, remaining, plan, bonus_lookup_credits: bonusCredits, ticket_lookup_credits: ticketCredits.lookup, credits_expiry_date: creditsExpiryDate };
   } catch (e) {
     console.error('checkLookupLimit error', e);
     return { allowed: true, used: 0, limit: 9999, remaining: 9999, plan: 'unknown', bonus_lookup_credits: 0 }; // fail-open on DB errors
@@ -2040,6 +2092,104 @@ app.post('/admin/users/:id/assign', authMiddleware, adminMiddleware, async (req,
   }
 });
 
+// ── Referral endpoints ────────────────────────────────────────────────────────
+
+// GET /referrals/stats — referral code + conversion counts + ticket counts
+app.get('/referrals/stats', authMiddleware, async (req, res) => {
+  const userId = req.user.id;
+  try {
+    const [codeR, statsR, ticketR] = await Promise.all([
+      pool.query('SELECT referral_code FROM users WHERE id=$1', [userId]),
+      pool.query(
+        `SELECT
+           COUNT(*) AS total_referred,
+           COUNT(*) FILTER (WHERE converted_at IS NOT NULL) AS total_converted
+         FROM referrals WHERE referrer_id = $1`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE status = 'available') AS available,
+           COUNT(*) FILTER (WHERE status = 'active')    AS active,
+           COUNT(*) FILTER (WHERE status = 'expired')   AS expired
+         FROM referral_tickets WHERE user_id = $1`,
+        [userId]
+      ),
+    ]);
+
+    let code = codeR.rows[0]?.referral_code;
+    if (!code) {
+      code = await generateUniqueReferralCode();
+      await pool.query('UPDATE users SET referral_code=$1 WHERE id=$2', [code, userId]);
+    }
+
+    return res.json({
+      referral_code:     code,
+      total_referred:    parseInt(statsR.rows[0]?.total_referred  || 0, 10),
+      total_converted:   parseInt(statsR.rows[0]?.total_converted || 0, 10),
+      available_tickets: parseInt(ticketR.rows[0]?.available      || 0, 10),
+      active_tickets:    parseInt(ticketR.rows[0]?.active         || 0, 10),
+      expired_tickets:   parseInt(ticketR.rows[0]?.expired        || 0, 10),
+    });
+  } catch (e) {
+    console.error('[referrals/stats]', e);
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// GET /referrals/tickets — list all tickets for the authenticated user
+app.get('/referrals/tickets', authMiddleware, async (req, res) => {
+  const userId = req.user.id;
+  await expireStaleTickets(userId);
+  try {
+    const r = await pool.query(
+      `SELECT id, lookup_credits, ocr_credits, earned_at, expires_at,
+              applied_at, applies_until, status
+       FROM referral_tickets
+       WHERE user_id = $1
+       ORDER BY earned_at DESC`,
+      [userId]
+    );
+    return res.json(r.rows);
+  } catch (e) {
+    console.error('[referrals/tickets]', e);
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// POST /referrals/tickets/:id/apply — activate a ticket for the current month
+app.post('/referrals/tickets/:id/apply', authMiddleware, async (req, res) => {
+  const userId = req.user.id;
+  const { id } = req.params;
+  await expireStaleTickets(userId);
+  try {
+    const r = await pool.query(
+      `SELECT * FROM referral_tickets WHERE id=$1 AND user_id=$2`,
+      [id, userId]
+    );
+    if (!r.rowCount) return res.status(404).json({ error: 'Ticket not found' });
+    const ticket = r.rows[0];
+
+    if (ticket.status !== 'available') {
+      return res.status(400).json({ error: `Ticket is already ${ticket.status} and cannot be applied.` });
+    }
+
+    // applies_until = last moment of the current UTC month
+    const now = new Date();
+    const appliesUntil = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+
+    await pool.query(
+      `UPDATE referral_tickets SET status='active', applied_at=now(), applies_until=$1 WHERE id=$2`,
+      [appliesUntil.toISOString(), id]
+    );
+
+    return res.json({ success: true, applies_until: appliesUntil.toISOString() });
+  } catch (e) {
+    console.error('[referrals/tickets/apply]', e);
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 // ── System alerts admin endpoints ──────────────────────────────────────────
 app.get('/admin/system-alerts', authMiddleware, adminMiddleware, async (req, res) => {
   try {
@@ -3421,6 +3571,31 @@ app.post('/auth/signup', authLimiter, async (req, res) => {
     const sql = `INSERT INTO users(full_name,email,password,email_verification_code,email_verification_expires,credits_expiry_date) VALUES($1,$2,$3,$4,$5,NOW()+INTERVAL '1 month') RETURNING id,created_date,full_name,email,role_type,phone,subscription_plan`;
     const newUser = await pool.query(sql, [saveFullName, email, hashed, verificationCode, verificationExpires]);
     logActivity(newUser.rows[0].id, 'signup', { email, full_name: saveFullName, method: 'email' }, req);
+
+    // Generate a unique referral code for this new user
+    try {
+      const refCode = await generateUniqueReferralCode();
+      await pool.query('UPDATE users SET referral_code=$1 WHERE id=$2', [refCode, newUser.rows[0].id]);
+    } catch (e) {
+      console.warn('[signup] referral code generation failed (non-fatal):', e.message);
+    }
+
+    // If the user signed up via someone's referral link, record it
+    const incomingRef = typeof req.body.referral_code === 'string' ? req.body.referral_code.trim().toUpperCase() : null;
+    if (incomingRef) {
+      try {
+        const referrerR = await pool.query('SELECT id FROM users WHERE referral_code=$1', [incomingRef]);
+        if (referrerR.rowCount && String(referrerR.rows[0].id) !== String(newUser.rows[0].id)) {
+          await pool.query(
+            `INSERT INTO referrals(referrer_id, referred_id) VALUES($1, $2) ON CONFLICT (referred_id) DO NOTHING`,
+            [referrerR.rows[0].id, newUser.rows[0].id]
+          );
+        }
+      } catch (e) {
+        console.warn('[signup] referral attribution failed (non-fatal):', e.message);
+      }
+    }
+
     // Send verification email non-blocking
     // if (!process.env.RESEND_API_KEY) { // old Resend guard
     //   console.log(`[signup] DEV — verification code for ${email}: ${verificationCode}`);
@@ -3973,7 +4148,8 @@ app.get('/subscription/ocr-usage', authMiddleware, async (req, res) => {
       usedQuery,
     ]);
     const baseOcrLimit = isUnlimited ? 99999 : parseInt(limitR.rows[0]?.monthly_ocr_limit ?? 2, 10);
-    const limit = isUnlimited ? 99999 : baseOcrLimit + bonusOcr;
+    const ticketOcr    = isUnlimited ? 0 : (await getActiveTicketCredits(userId)).ocr;
+    const limit = isUnlimited ? 99999 : baseOcrLimit + bonusOcr + ticketOcr;
     const used  = parseInt(usedR.rows[0].used, 10);
     const daysUntilExpiry = creditsExpiryDate
       ? Math.ceil((new Date(creditsExpiryDate) - new Date()) / (1000 * 60 * 60 * 24))
@@ -4122,6 +4298,38 @@ app.post('/stripe/webhook', async (req, res) => {
       [plan, userId, renewalDate, stripeSubId]
     );
     console.log(`[Stripe] Subscription activated: user=${userId} plan=${plan} interval=${billingInterval}`);
+
+    // Award referral ticket to referrer on referred user's first paid purchase
+    try {
+      const refR = await pool.query(
+        `SELECT r.id, r.referrer_id FROM referrals r
+         WHERE r.referred_id = $1 AND r.converted_at IS NULL LIMIT 1`,
+        [userId]
+      );
+      if (refR.rowCount) {
+        const { id: referralId, referrer_id: referrerId } = refR.rows[0];
+        await pool.query(`UPDATE referrals SET converted_at = now() WHERE id = $1`, [referralId]);
+        const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+        await pool.query(
+          `INSERT INTO referral_tickets(user_id, referral_id, lookup_credits, ocr_credits, expires_at)
+           VALUES($1, $2, 1000, 100, $3)`,
+          [referrerId, referralId, expiresAt.toISOString()]
+        );
+        console.log(`[Referral] Ticket awarded to ${referrerId} for referral ${referralId}`);
+        const referrerR = await pool.query('SELECT email, full_name FROM users WHERE id=$1', [referrerId]);
+        if (referrerR.rowCount) {
+          const ref = referrerR.rows[0];
+          sendEmail(ref.email, "You've earned a Burgundy Bid referral reward!", emailTemplate(`
+            <p>Hi ${ref.full_name || 'there'},</p>
+            <p>Great news — a friend you referred has just subscribed to Burgundy Bid!</p>
+            <p>You've earned a <strong>bonus credit ticket</strong> with <strong>1,000 lookup credits</strong> and <strong>100 AI Image credits</strong>.</p>
+            <p>Head to your Profile page and open your <strong>Gift Box</strong> to apply the ticket. You have one year before it expires.</p>
+          `)).catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.warn('[Referral] ticket award non-fatal:', e.message);
+    }
 
     // Record confirmed payment — only after successful activation
     try {
@@ -5009,7 +5217,8 @@ app.post('/ocr/image', authMiddleware, async (req, res) => {
           [userId]
         ),
       ]);
-      const limit = parseInt(limitR.rows[0]?.monthly_ocr_limit ?? 2, 10) + bonusOcr;
+      const ticketOcr = (await getActiveTicketCredits(userId)).ocr;
+      const limit = parseInt(limitR.rows[0]?.monthly_ocr_limit ?? 2, 10) + bonusOcr + ticketOcr;
       const used  = parseInt(usedR.rows[0].used, 10);
       if (used >= limit) {
         const errorMsg = isFree
