@@ -941,14 +941,7 @@ export default function Profile() {
                         </div>
                         <div className="space-y-1">
                           <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Recurring</p>
-                          <span className={`inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full ${
-                            recurring === 'Monthly' ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' :
-                            recurring === 'Yearly'  ? 'bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300' :
-                            'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
-                          }`}>
-                            {recurring === 'None' ? <XCircle className="w-3 h-3" /> : <RefreshCw className="w-3 h-3" />}
-                            {recurring}
-                          </span>
+                          <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">{recurring}</p>
                         </div>
                         <div className="space-y-1">
                           <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">
@@ -957,7 +950,7 @@ export default function Profile() {
                           {renewalDate ? (
                             <div className="flex items-center gap-1.5">
                               <Calendar className="w-3.5 h-3.5 text-gray-400" />
-                              <p className={`text-sm font-semibold ${cancelAtEnd ? 'text-amber-600 dark:text-amber-400' : 'text-gray-800 dark:text-gray-100'}`}>
+                              <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">
                                 {new Date(renewalDate).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
                               </p>
                             </div>
@@ -965,14 +958,6 @@ export default function Profile() {
                             <p className="text-sm text-gray-400">{isFree ? '—' : 'Not available'}</p>
                           )}
                         </div>
-                        {cancelAtEnd && (
-                          <div className="sm:col-span-2">
-                            <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2">
-                              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                              Cancellation scheduled - your plan remains active until the date above.
-                            </div>
-                          </div>
-                        )}
                       </div>
                     );
                   })()}
@@ -1113,26 +1098,14 @@ export default function Profile() {
                                     {new Date(inv.date).toLocaleDateString()}
                                   </td>
                                   <td className="py-3 text-gray-700 dark:text-gray-200">{inv.description}</td>
-                                  <td className="py-3">
-                                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                                      recurringLabel === 'Monthly' ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' :
-                                      recurringLabel === 'Yearly'  ? 'bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300' :
-                                      'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
-                                    }`}>
-                                      {recurringLabel}
-                                    </span>
+                                  <td className="py-3 text-sm text-gray-600 dark:text-gray-300">
+                                    {recurringLabel}
                                   </td>
                                   <td className="py-3 text-gray-700 dark:text-gray-200 tabular-nums font-medium">
                                     {inv.currency?.toUpperCase()} {Number(inv.amount).toFixed(2)}
                                   </td>
-                                  <td className="py-3">
-                                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                                      inv.status === 'paid' || inv.status === 'completed' ? 'bg-emerald-100 text-emerald-700' :
-                                      inv.status === 'open' ? 'bg-amber-100 text-amber-700' :
-                                      'bg-gray-100 text-gray-500'
-                                    }`}>
-                                      {inv.status}
-                                    </span>
+                                  <td className="py-3 text-sm text-gray-600 dark:text-gray-300 capitalize">
+                                    {inv.status}
                                   </td>
                                   <td className="py-3">
                                     {inv.invoice_url ? (
