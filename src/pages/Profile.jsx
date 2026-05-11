@@ -901,7 +901,16 @@ export default function Profile() {
                 <div id="subscription-plans">
                   <CollapsibleCard title="Subscription Plans" icon={<CreditCard className="w-5 h-5 text-[#800020]" />}
                     description="Choose the plan that works best for you" defaultOpen={true}>
-                    <SubscriptionPlans hideHeader currentPlan={user?.subscription_plan || "free"} />
+                    <SubscriptionPlans
+                      hideHeader
+                      currentPlan={user?.subscription_plan || "free"}
+                      subDetails={subDetails}
+                      onUpgradeSuccess={(newPlan) => {
+                        loadUser();
+                        loadSubDetails();
+                        setBillingMessage(`Plan upgraded to ${newPlan.replace(/_/g, ' ')}! Your new plan is active.`);
+                      }}
+                    />
                   </CollapsibleCard>
                 </div>
 
@@ -917,7 +926,7 @@ export default function Profile() {
                     const planLabel = plan.replace(/_monthly|_annually/g, '').replace(/^\w/, c => c.toUpperCase());
                     const renewalDate = subDetails?.renewal_date;
                     const cancelAtEnd = subDetails?.cancel_at_period_end;
-                    const recurring = isFree ? 'None' : interval === 'annually' ? 'Yearly' : 'Monthly';
+                    const recurring = (isFree || cancelAtEnd) ? 'None' : interval === 'annually' ? 'Yearly' : 'Monthly';
                     return (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div className="space-y-1">
@@ -927,7 +936,7 @@ export default function Profile() {
                         <div className="space-y-1">
                           <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Billing</p>
                           <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 capitalize">
-                            {isFree ? '—' : interval === 'annually' ? 'Annually' : 'Monthly'}
+                            {(isFree || cancelAtEnd) ? '—' : interval === 'annually' ? 'Annually' : 'Monthly'}
                           </p>
                         </div>
                         <div className="space-y-1">
@@ -960,7 +969,7 @@ export default function Profile() {
                           <div className="sm:col-span-2">
                             <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2">
                               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                              Cancellation scheduled — your plan remains active until the date above.
+                              Cancellation scheduled - your plan remains active until the date above.
                             </div>
                           </div>
                         )}
@@ -1019,10 +1028,13 @@ export default function Profile() {
                     {subDetails?.cancel_at_period_end ? (
                       <div className="space-y-3">
                         <p className="text-sm text-amber-600 dark:text-amber-400">
-                          Your subscription is already scheduled to cancel on{' '}
-                          <strong>{subDetails.renewal_date ? new Date(subDetails.renewal_date).toLocaleDateString() : '—'}</strong>.
+                          Your subscription has been cancelled. Your credits will remain active until{' '}
+                          <strong>{
+                            (subDetails.credits_expiry_date || subDetails.renewal_date)
+                              ? new Date(subDetails.credits_expiry_date || subDetails.renewal_date).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
+                              : '—'
+                          }</strong>.
                         </p>
-                        <p className="text-xs text-gray-400">You will retain full access until that date.</p>
                       </div>
                     ) : cancelConfirmOpen ? (
                       <div className="space-y-4">

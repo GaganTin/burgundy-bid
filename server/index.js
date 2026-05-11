@@ -4084,6 +4084,23 @@ app.post('/stripe/webhook', async (req, res) => {
       amount_usd: (session.amount_total || 0) / 100,
       stripe_session_id: session.id,
     });
+
+    // Cancel any other active subscriptions — the new one is now the source of truth
+    if (session.customer && stripeSubId) {
+      try {
+        const otherSubs = await stripe.subscriptions.list({
+          customer: session.customer, status: 'active', limit: 10,
+        });
+        for (const oldSub of otherSubs.data) {
+          if (oldSub.id !== stripeSubId) {
+            await stripe.subscriptions.cancel(oldSub.id);
+            console.log(`[Stripe] Cancelled superseded sub ${oldSub.id} for user ${userId}`);
+          }
+        }
+      } catch (e) {
+        console.warn('[Stripe] Superseded sub cleanup (non-fatal):', e.message);
+      }
+    }
   }
 
   try {
@@ -4116,14 +4133,26 @@ app.post('/stripe/webhook', async (req, res) => {
 
     if (event.type === 'customer.subscription.deleted') {
       const sub = event.data.object;
-      const r = await pool.query('SELECT id FROM users WHERE stripe_customer_id=$1', [sub.customer]);
+      const r = await pool.query('SELECT id, subscription_id FROM users WHERE stripe_customer_id=$1', [sub.customer]);
       if (r.rowCount) {
-        await pool.query(
-          `UPDATE users SET subscription_plan='free', subscription_ended=now(), credits_expiry_date=now() WHERE id=$1`,
-          [r.rows[0].id]
-        );
-        console.log(`[Stripe] Subscription cancelled for user ${r.rows[0].id}`);
-        logActivity(r.rows[0].id, 'subscription_cancelled', { stripe_subscription_id: sub.id, reason: sub.cancellation_details?.reason || null });
+        const userId = r.rows[0].id;
+        // If another active subscription exists (e.g. user already upgraded), don't reset
+        const remaining = await stripe.subscriptions.list({
+          customer: sub.customer, status: 'active', limit: 1,
+        });
+        if (!remaining.data.length) {
+          // credits_expiry_date was set at cancellation time — preserve it so the user
+          // retains access until the period they paid for
+          await pool.query(
+            `UPDATE users SET subscription_plan='free', subscription_ended=now(),
+             subscription_id=NULL, subscription_renewal_date=NULL WHERE id=$1`,
+            [userId]
+          );
+          console.log(`[Stripe] Subscription deleted — user ${userId} reverted to free`);
+        } else {
+          console.log(`[Stripe] Sub ${sub.id} deleted but user ${userId} has another active sub — skipping free reset`);
+        }
+        logActivity(userId, 'subscription_cancelled', { stripe_subscription_id: sub.id, reason: sub.cancellation_details?.reason || null });
       }
     }
 
@@ -4221,6 +4250,25 @@ app.get('/stripe/verify-session', authMiddleware, async (req, res) => {
          credits_reset_date=now(), credits_expiry_date=null, subscription_renewal_date=$3, subscription_id=$4 WHERE id=$2`,
         [plan, userId, renewalDate, confirmedSubId]
       );
+
+      // Cancel any other active subscriptions — the newly confirmed one takes over
+      if (confirmedSubId) {
+        try {
+          const sessionData = await stripe.checkout.sessions.retrieve(session_id, { expand: ['customer'] });
+          const customerId = typeof sessionData.customer === 'string' ? sessionData.customer : sessionData.customer?.id;
+          if (customerId) {
+            const otherSubs = await stripe.subscriptions.list({ customer: customerId, status: 'active', limit: 10 });
+            for (const oldSub of otherSubs.data) {
+              if (oldSub.id !== confirmedSubId) {
+                await stripe.subscriptions.cancel(oldSub.id);
+                console.log(`[Stripe] verify-session: cancelled superseded sub ${oldSub.id} for user ${userId}`);
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('[Stripe] verify-session superseded sub cleanup (non-fatal):', e.message);
+        }
+      }
     }
 
     const uR = await pool.query('SELECT id,email,subscription_plan,subscription_started FROM users WHERE id=$1', [userId]);
@@ -4256,7 +4304,7 @@ app.get('/subscription/details', authMiddleware, async (req, res) => {
   try {
     const uR = await pool.query(
       `SELECT subscription_plan, subscription_started, subscription_ended,
-              subscription_renewal_date, stripe_customer_id, subscription_id
+              subscription_renewal_date, stripe_customer_id, subscription_id, credits_expiry_date
        FROM users WHERE id=$1`,
       [req.user.id]
     );
@@ -4273,10 +4321,11 @@ app.get('/subscription/details', authMiddleware, async (req, res) => {
     if (stripe && u.stripe_customer_id) {
       try {
         const subs = await stripe.subscriptions.list({
-          customer: u.stripe_customer_id, status: 'active', limit: 1,
+          customer: u.stripe_customer_id, status: 'active', limit: 10,
         });
         if (subs.data.length) {
-          const sub = subs.data[0];
+          // Prefer the subscription matching our stored ID; fall back to the most recent one
+          const sub = subs.data.find(s => s.id === stripeSubId) || subs.data[0];
           stripeSubId = sub.id;
           renewalDate = new Date(sub.current_period_end * 1000).toISOString();
           cancelAtPeriodEnd = sub.cancel_at_period_end;
@@ -4306,6 +4355,7 @@ app.get('/subscription/details', authMiddleware, async (req, res) => {
       cancel_at_period_end: cancelAtPeriodEnd,
       subscription_started: u.subscription_started,
       subscription_ended: u.subscription_ended,
+      credits_expiry_date: u.credits_expiry_date || null,
       payment_method: paymentMethod,
     });
   } catch (e) {
@@ -4323,31 +4373,32 @@ app.post('/stripe/cancel-subscription', authMiddleware, async (req, res) => {
     const u = uR.rows[0];
     if (!u.stripe_customer_id) return res.status(400).json({ error: 'No active subscription found' });
 
-    // Resolve subscription ID — validate stored ID is still active, fall back to listing
-    let subId = u.subscription_id;
-    if (subId) {
-      try {
-        const existing = await stripe.subscriptions.retrieve(subId);
-        if (!['active', 'trialing'].includes(existing.status)) {
-          await pool.query('UPDATE users SET subscription_id=NULL WHERE id=$1', [req.user.id]);
-          subId = null;
-        }
-      } catch (e) {
-        await pool.query('UPDATE users SET subscription_id=NULL WHERE id=$1', [req.user.id]);
-        subId = null;
+    // Cancel ALL active subscriptions at period end — there should only be one after our
+    // activation cleanup, but handle legacy multi-sub state gracefully
+    const allSubs = await stripe.subscriptions.list({
+      customer: u.stripe_customer_id, status: 'active', limit: 10,
+    });
+    if (!allSubs.data.length) return res.status(400).json({ error: 'No active subscription found' });
+
+    let latestPeriodEnd = 0;
+    let primarySubId = null;
+    for (const sub of allSubs.data) {
+      const updated = await stripe.subscriptions.update(sub.id, { cancel_at_period_end: true });
+      if (updated.current_period_end > latestPeriodEnd) {
+        latestPeriodEnd = updated.current_period_end;
+        primarySubId = sub.id;
       }
     }
-    if (!subId) {
-      const subs = await stripe.subscriptions.list({ customer: u.stripe_customer_id, status: 'active', limit: 1 });
-      if (!subs.data.length) return res.status(400).json({ error: 'No active subscription found' });
-      subId = subs.data[0].id;
-      await pool.query('UPDATE users SET subscription_id=$1 WHERE id=$2', [subId, req.user.id]);
-    }
 
-    const updated = await stripe.subscriptions.update(subId, { cancel_at_period_end: true });
-    const cancelDate = new Date(updated.current_period_end * 1000).toISOString();
+    const cancelDate = new Date(latestPeriodEnd * 1000).toISOString();
 
-    logActivity(req.user.id, 'subscription_cancelled', { stripe_subscription_id: subId, cancel_at: cancelDate, mode: 'end_of_period' });
+    // Record expiry date so the UI can show "credits remain until X" immediately
+    await pool.query(
+      'UPDATE users SET subscription_id=$1, credits_expiry_date=$2 WHERE id=$3',
+      [primarySubId, cancelDate, req.user.id]
+    );
+
+    logActivity(req.user.id, 'subscription_cancelled', { stripe_subscription_id: primarySubId, cancel_at: cancelDate, mode: 'end_of_period' });
     return res.json({ success: true, cancel_at: cancelDate });
   } catch (e) {
     console.error('[cancel-subscription]', e);
@@ -4358,6 +4409,58 @@ app.post('/stripe/cancel-subscription', authMiddleware, async (req, res) => {
 // Helper: compare plan tiers for upgrade vs downgrade detection
 const PLAN_TIER = { free: 0, basic_monthly: 1, basic_annually: 2, pro_monthly: 3, pro_annually: 4 };
 function planTier(name) { return PLAN_TIER[normalizePlan(name)] ?? 0; }
+
+// Preview the prorated charge for switching to a new plan mid-cycle
+app.get('/stripe/upgrade-preview', authMiddleware, async (req, res) => {
+  if (!stripe) return res.status(503).json({ error: 'Stripe not configured' });
+  const { plan } = req.query;
+  const VALID_PLANS = ['basic_monthly', 'basic_annually', 'pro_monthly', 'pro_annually'];
+  if (!plan || !VALID_PLANS.includes(plan)) {
+    return res.status(400).json({ error: 'Invalid plan' });
+  }
+  try {
+    const uR = await pool.query(
+      'SELECT stripe_customer_id, subscription_id, subscription_plan FROM users WHERE id=$1',
+      [req.user.id]
+    );
+    if (!uR.rowCount) return res.status(404).json({ error: 'User not found' });
+    const u = uR.rows[0];
+    if (!u.stripe_customer_id) return res.json({ no_subscription: true });
+
+    let activeSub = null;
+    if (u.subscription_id) {
+      try { activeSub = await stripe.subscriptions.retrieve(u.subscription_id); } catch (e) {}
+    }
+    if (!activeSub || !['active', 'trialing'].includes(activeSub.status)) {
+      const subs = await stripe.subscriptions.list({ customer: u.stripe_customer_id, status: 'active', limit: 1 });
+      activeSub = subs.data[0] || null;
+    }
+    if (!activeSub) return res.json({ no_subscription: true });
+
+    const priceId = await getOrCreateStripePrice(plan);
+    const currentPlan = normalizePlan(u.subscription_plan);
+    const isUpgrade = planTier(plan) > planTier(currentPlan);
+
+    const upcoming = await stripe.invoices.retrieveUpcoming({
+      customer: u.stripe_customer_id,
+      subscription: activeSub.id,
+      subscription_items: [{ id: activeSub.items.data[0].id, price: priceId }],
+      subscription_proration_behavior: 'always_invoice',
+    });
+
+    return res.json({
+      amount_due: upcoming.amount_due / 100,
+      currency: upcoming.currency.toUpperCase(),
+      is_upgrade: isUpgrade,
+      current_plan: currentPlan,
+      new_plan: plan,
+      period_end: new Date(activeSub.current_period_end * 1000).toISOString(),
+    });
+  } catch (e) {
+    console.error('[upgrade-preview]', e);
+    res.status(500).json({ error: String(e) });
+  }
+});
 
 // Upgrade or downgrade an existing paid subscription
 app.post('/stripe/update-subscription', authMiddleware, async (req, res) => {
@@ -4398,7 +4501,7 @@ app.post('/stripe/update-subscription', authMiddleware, async (req, res) => {
     // Update Stripe subscription
     const updatedSub = await stripe.subscriptions.update(subId, {
       items: [{ id: activeSub.items.data[0].id, price: priceId }],
-      proration_behavior: isUpgrade ? 'create_prorations' : 'none',
+      proration_behavior: isUpgrade ? 'always_invoice' : 'none',
       cancel_at_period_end: false, // clear any pending cancellation
     });
 

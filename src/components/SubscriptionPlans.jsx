@@ -2,13 +2,13 @@ import { useState, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Check, CreditCard, Loader2 } from "lucide-react";
+import { Check, CreditCard, Loader2, ArrowUp } from "lucide-react";
 
 const API = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
 
-// Transform raw DB rows into the plan shape PlanCard expects for a given billing period.
-// With granular plan names (basic_monthly, basic_annually, etc.), we filter by suffix
-// so each billing toggle shows the correct plan rows.
+// Tier order used to detect upgrades vs downgrades
+const PLAN_TIER = { free: 0, basic_monthly: 1, basic_annually: 2, pro_monthly: 3, pro_annually: 4 };
+
 function rowsToPlanList(rows, billing) {
   const suffix = billing === "annually" ? "_annually" : "_monthly";
   return rows
@@ -18,7 +18,6 @@ function rowsToPlanList(rows, billing) {
       const isAnnual = row.plan_name.endsWith("_annually");
       const priceCents = isAnnual ? row.annual_price_cents : row.monthly_price_cents;
       const dollars = priceCents / 100;
-      // Format: integer prices show without decimals ($75), non-integer show 2dp ($6.99)
       const price = dollars % 1 === 0 ? dollars : parseFloat(dollars.toFixed(2));
       const baseName = row.plan_name.replace(/_(monthly|annually)$/, "");
       const plan = {
@@ -30,7 +29,6 @@ function rowsToPlanList(rows, billing) {
         popular: baseName === "pro",
       };
       if (isAnnual && !isFree) {
-        // Compute savings vs the monthly counterpart row
         const monthlyRow = rows.find((r) => r.plan_name === `${baseName}_monthly`);
         if (monthlyRow && monthlyRow.monthly_price_cents > 0) {
           const saving = Math.round((monthlyRow.monthly_price_cents / 100) * 12 - price);
@@ -49,7 +47,6 @@ async function startCheckout(plan, _billing, setLoading, setError) {
     const res = await fetch(`${API}/stripe/create-checkout-session`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      // plan is already the full name (e.g. 'basic_monthly') — no separate billing param needed
       body: JSON.stringify({ plan }),
     });
     const data = await res.json();
@@ -61,28 +58,69 @@ async function startCheckout(plan, _billing, setLoading, setError) {
   }
 }
 
-async function openBillingPortal(setLoading, setError) {
-  setLoading("portal");
-  setError(null);
-  try {
-    const token = localStorage.getItem("app_access_token");
-    const res = await fetch(`${API}/stripe/billing-portal`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Failed to open billing portal");
-    window.location.href = data.url;
-  } catch (e) {
-    setError(e.message);
-    setLoading(null);
-  }
-}
-
-function PlanCard({ plan, billing, currentPlan, loading, setLoading, setError }) {
-  // Exact match: user is on 'basic_monthly', only that card shows Active
+function PlanCard({ plan, billing, currentPlan, hasActiveSub, loading, setLoading, setError, onUpgradeSuccess }) {
   const isActive = plan.id === (currentPlan || "free");
   const isFree = plan.price === 0;
+  const currentTier = PLAN_TIER[currentPlan] ?? 0;
+  const thisTier = PLAN_TIER[plan.id] ?? 0;
+  // Show the Upgrade flow only when the user has a genuinely active subscription
+  // and this plan is strictly higher tier (not current, not free)
+  const isUpgrade = hasActiveSub && thisTier > currentTier && !isActive && !isFree;
+
+  const [preview, setPreview] = useState(null); // null | 'loading' | { amount_due, currency, ... }
+  const [upgrading, setUpgrading] = useState(false);
+
+  const handleUpgradeClick = async () => {
+    setPreview("loading");
+    setError(null);
+    try {
+      const token = localStorage.getItem("app_access_token");
+      const res = await fetch(`${API}/stripe/upgrade-preview?plan=${plan.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not load upgrade preview");
+      if (data.no_subscription) {
+        // Server found no active subscription — fall through to regular checkout
+        setPreview(null);
+        await startCheckout(plan.id, billing, setLoading, setError);
+        return;
+      }
+      setPreview(data);
+    } catch (e) {
+      setError(e.message);
+      setPreview(null);
+    }
+  };
+
+  const handleConfirmUpgrade = async () => {
+    setUpgrading(true);
+    setError(null);
+    try {
+      const token = localStorage.getItem("app_access_token");
+      const res = await fetch(`${API}/stripe/update-subscription`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ plan: plan.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Upgrade failed");
+      if (data.redirect_to_checkout) {
+        // Server found no active subscription — fall through to regular checkout
+        setUpgrading(false);
+        setPreview(null);
+        await startCheckout(plan.id, billing, setLoading, setError);
+        return;
+      }
+      setPreview(null);
+      setUpgrading(false);
+      if (onUpgradeSuccess) onUpgradeSuccess(plan.id);
+    } catch (e) {
+      setError(e.message);
+      setUpgrading(false);
+      setPreview(null);
+    }
+  };
 
   let btn;
   if (isFree && isActive) {
@@ -91,6 +129,56 @@ function PlanCard({ plan, billing, currentPlan, loading, setLoading, setError })
     btn = <Button className="w-full bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-default" disabled>Current Plan</Button>;
   } else if (isFree) {
     btn = <Button className="w-full bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-default" disabled>Free Plan</Button>;
+  } else if (isUpgrade) {
+    if (preview === "loading") {
+      btn = (
+        <Button className="w-full bg-[#800020] hover:bg-[#6b001b] text-white" disabled>
+          <Loader2 className="w-4 h-4 mr-2 animate-spin" />Checking…
+        </Button>
+      );
+    } else if (preview) {
+      btn = (
+        <div className="space-y-2.5">
+          <p className="text-xs text-center text-gray-600 dark:text-gray-400">
+            Charged today:{" "}
+            <strong className="text-gray-900 dark:text-white">
+              {preview.amount_due > 0
+                ? `${preview.currency} $${Number(preview.amount_due).toFixed(2)}`
+                : "Nothing (you have a proration credit)"}
+            </strong>
+          </p>
+          <div className="flex gap-2">
+            <Button
+              onClick={handleConfirmUpgrade}
+              disabled={upgrading}
+              className="flex-1 bg-[#800020] hover:bg-[#6b001b] text-white text-xs h-9"
+            >
+              {upgrading
+                ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" />Upgrading…</>
+                : "Confirm Upgrade"}
+            </Button>
+            <Button
+              onClick={() => setPreview(null)}
+              disabled={upgrading}
+              variant="outline"
+              className="flex-1 text-xs h-9 border-gray-200 dark:border-gray-700 dark:text-gray-300"
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      );
+    } else {
+      btn = (
+        <Button
+          className="w-full bg-[#800020] hover:bg-[#6b001b] text-white"
+          disabled={!!loading}
+          onClick={handleUpgradeClick}
+        >
+          <ArrowUp className="w-4 h-4 mr-2" />Upgrade
+        </Button>
+      );
+    }
   } else {
     btn = (
       <Button
@@ -98,7 +186,9 @@ function PlanCard({ plan, billing, currentPlan, loading, setLoading, setError })
         disabled={!!loading}
         onClick={() => startCheckout(plan.id, billing, setLoading, setError)}
       >
-        {loading === plan.id ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Redirecting...</> : "Subscribe"}
+        {loading === plan.id
+          ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Redirecting…</>
+          : "Subscribe"}
       </Button>
     );
   }
@@ -145,7 +235,12 @@ function PlanSkeleton() {
   );
 }
 
-export default function SubscriptionPlans({ hideHeader = false, currentPlan = "free" }) {
+export default function SubscriptionPlans({
+  hideHeader = false,
+  currentPlan = "free",
+  subDetails = null,
+  onUpgradeSuccess,
+}) {
   const [billing, setBilling] = useState("monthly");
   const [loading, setLoading] = useState(null);
   const [error, setError] = useState(null);
@@ -156,13 +251,21 @@ export default function SubscriptionPlans({ hideHeader = false, currentPlan = "f
     fetch(`${API}/plans`)
       .then((r) => r.json())
       .then((data) => {
-        if (Array.isArray(data)) setRawPlans(data.filter(p => p.plan_name !== 'admin'));
+        if (Array.isArray(data)) setRawPlans(data.filter(p => p.plan_name !== "admin"));
         else setPlansError("Failed to load plans");
       })
       .catch(() => setPlansError("Failed to load plans"));
   }, []);
 
   const plans = rawPlans ? rowsToPlanList(rawPlans, billing) : null;
+
+  // True only when the user has an active, non-cancelled paid subscription
+  const hasActiveSub = !!(
+    subDetails &&
+    subDetails.plan &&
+    subDetails.plan !== "free" &&
+    !subDetails.cancel_at_period_end
+  );
 
   const toggle = (
     <div className="flex items-center bg-gray-100 dark:bg-gray-800 rounded-lg p-1 gap-1">
@@ -187,8 +290,17 @@ export default function SubscriptionPlans({ hideHeader = false, currentPlan = "f
           ? (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
               {plans.map((plan) => (
-                <PlanCard key={plan.id} plan={plan} billing={billing} currentPlan={currentPlan}
-                  loading={loading} setLoading={setLoading} setError={setError} />
+                <PlanCard
+                  key={plan.id}
+                  plan={plan}
+                  billing={billing}
+                  currentPlan={currentPlan}
+                  hasActiveSub={hasActiveSub}
+                  loading={loading}
+                  setLoading={setLoading}
+                  setError={setError}
+                  onUpgradeSuccess={onUpgradeSuccess}
+                />
               ))}
             </div>
           )
