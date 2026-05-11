@@ -2000,6 +2000,46 @@ app.post('/admin/users/:id/credits', authMiddleware, adminMiddleware, async (req
   }
 });
 
+// Admin: manually assign subscription plan or role to a user
+app.post('/admin/users/:id/assign', authMiddleware, adminMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const { subscription_plan, role_type } = req.body || {};
+
+  const ALLOWED_PLANS = ['free', 'family', 'admin'];
+  const ALLOWED_ROLES = ['user', 'admin'];
+
+  if (subscription_plan !== undefined && !ALLOWED_PLANS.includes(subscription_plan)) {
+    return res.status(400).json({ error: `Invalid plan. Allowed: ${ALLOWED_PLANS.join(', ')}` });
+  }
+  if (role_type !== undefined && !ALLOWED_ROLES.includes(role_type)) {
+    return res.status(400).json({ error: `Invalid role. Allowed: ${ALLOWED_ROLES.join(', ')}` });
+  }
+
+  const updates = [];
+  const vals = [];
+  if (subscription_plan !== undefined) { updates.push(`subscription_plan = $${vals.length + 1}`); vals.push(subscription_plan); }
+  if (role_type !== undefined)          { updates.push(`role_type = $${vals.length + 1}`);         vals.push(role_type); }
+  if (updates.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+
+  vals.push(id);
+  try {
+    const r = await pool.query(
+      `UPDATE users SET ${updates.join(', ')} WHERE id = $${vals.length}
+       RETURNING id, email, full_name, subscription_plan, role_type`,
+      vals
+    );
+    if (!r.rowCount) return res.status(404).json({ error: 'User not found' });
+    await pool.query(
+      'INSERT INTO users_activity(user_id, activity_type, activity_details) VALUES($1,$2,$3)',
+      [id, 'admin_plan_updated', JSON.stringify({ assigned_by: req.user.id, subscription_plan, role_type })]
+    ).catch(() => {});
+    return res.json({ success: true, user: r.rows[0] });
+  } catch (e) {
+    console.error('[admin/users/assign]', e);
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 // ── System alerts admin endpoints ──────────────────────────────────────────
 app.get('/admin/system-alerts', authMiddleware, adminMiddleware, async (req, res) => {
   try {

@@ -1927,6 +1927,11 @@ function UsersTab({ users, loading, onAction, adminId }) {
   const [lockReason, setLockReason] = useState("");
   const [lockHours, setLockHours] = useState(24);
   const [acting, setActing] = useState(false);
+  const [assignTarget, setAssignTarget] = useState(null);
+  const [assignPlan, setAssignPlan] = useState("free");
+  const [assignRole, setAssignRole] = useState("user");
+  const [assignActing, setAssignActing] = useState(false);
+  const [assignError, setAssignError] = useState(null);
   const [colPickerOpen, setColPickerOpen] = useState(false);
   const [visibleCols, setVisibleCols] = useState(() => {
     try { const s = localStorage.getItem(USERS_COLS_KEY); return s ? JSON.parse(s) : DEFAULT_COLS; }
@@ -2000,6 +2005,22 @@ function UsersTab({ users, loading, onAction, adminId }) {
     setLockTarget(null);
     setLockReason("");
     setLockHours(24);
+  };
+
+  const openAssign = (u) => {
+    setAssignTarget({ id: u.id, name: u.full_name || u.email });
+    setAssignPlan(u.subscription_plan || "free");
+    setAssignRole(u.role_type || "user");
+    setAssignError(null);
+  };
+
+  const handleConfirmAssign = async () => {
+    if (!assignTarget) return;
+    setAssignActing(true);
+    setAssignError(null);
+    await onAction(assignTarget.id, "assign", { subscription_plan: assignPlan, role_type: assignRole });
+    setAssignActing(false);
+    setAssignTarget(null);
   };
 
   if (loading) return <div className="flex justify-center py-12"><div className="w-6 h-6 border-2 border-gray-200 border-t-[#800020] rounded-full animate-spin" /></div>;
@@ -2185,19 +2206,26 @@ function UsersTab({ users, loading, onAction, adminId }) {
                   {vis("bonus_ocr")         && <BonusNum v={ocrBonus} />}
                   {vis("bonus_ocr_used")    && <BonusNum v={ocrBonusUsed} />}
                   <td className="px-4 py-3 text-right">
-                    {locked ? (
+                    <div className="flex items-center justify-end gap-1.5">
                       <Button size="sm" variant="outline"
-                        className="h-7 text-xs gap-1 border-emerald-200 text-emerald-700 hover:bg-emerald-50"
-                        onClick={() => setLockTarget({ id: u.id, name: u.full_name || u.email, action: "unlock" })}>
-                        <Unlock className="w-3 h-3" /> Unlock
+                        className="h-7 text-xs gap-1 border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                        onClick={() => openAssign(u)}>
+                        <Edit2 className="w-3 h-3" /> Assign
                       </Button>
-                    ) : (
-                      <Button size="sm" variant="outline"
-                        className="h-7 text-xs gap-1 border-red-200 text-red-600 hover:bg-red-50"
-                        onClick={() => setLockTarget({ id: u.id, name: u.full_name || u.email, action: "lock" })}>
-                        <Lock className="w-3 h-3" /> Lock
-                      </Button>
-                    )}
+                      {locked ? (
+                        <Button size="sm" variant="outline"
+                          className="h-7 text-xs gap-1 border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                          onClick={() => setLockTarget({ id: u.id, name: u.full_name || u.email, action: "unlock" })}>
+                          <Unlock className="w-3 h-3" /> Unlock
+                        </Button>
+                      ) : (
+                        <Button size="sm" variant="outline"
+                          className="h-7 text-xs gap-1 border-red-200 text-red-600 hover:bg-red-50"
+                          onClick={() => setLockTarget({ id: u.id, name: u.full_name || u.email, action: "lock" })}>
+                          <Lock className="w-3 h-3" /> Lock
+                        </Button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
@@ -2250,6 +2278,46 @@ function UsersTab({ users, loading, onAction, adminId }) {
               <Button className={`flex-1 h-9 text-sm text-white ${lockTarget.action === "lock" ? "bg-red-600 hover:bg-red-700" : "bg-emerald-600 hover:bg-emerald-700"}`}
                 onClick={handleConfirm} disabled={acting}>
                 {acting ? "Processing…" : lockTarget.action === "lock" ? "Lock account" : "Unlock account"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Assign plan / role dialog */}
+      {assignTarget && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-xl p-6 max-w-sm w-full space-y-4">
+            <div className="flex items-center gap-2">
+              <Edit2 className="w-5 h-5 text-[#800020]" />
+              <h3 className="font-semibold text-gray-900 dark:text-white">Assign Plan / Role</h3>
+            </div>
+            <p className="text-sm text-gray-500">
+              Update subscription plan or admin role for <strong className="text-gray-800 dark:text-gray-200">{assignTarget.name}</strong>.
+            </p>
+            <div>
+              <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block mb-1">Subscription Plan</label>
+              <select value={assignPlan} onChange={e => setAssignPlan(e.target.value)}
+                className="w-full text-sm px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 dark:text-gray-200">
+                <option value="free">Free</option>
+                <option value="family">Family</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block mb-1">Role</label>
+              <select value={assignRole} onChange={e => setAssignRole(e.target.value)}
+                className="w-full text-sm px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 dark:text-gray-200">
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
+            {assignError && <p className="text-xs text-red-500">{assignError}</p>}
+            <div className="flex gap-2 pt-1">
+              <Button variant="outline" className="flex-1 h-9 text-sm" onClick={() => setAssignTarget(null)} disabled={assignActing}>Cancel</Button>
+              <Button className="flex-1 h-9 text-sm text-white bg-[#800020] hover:bg-[#6b001b]"
+                onClick={handleConfirmAssign} disabled={assignActing}>
+                {assignActing ? "Saving…" : "Save"}
               </Button>
             </div>
           </div>
