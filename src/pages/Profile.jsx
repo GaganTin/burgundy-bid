@@ -439,7 +439,7 @@ export default function Profile() {
         .then(r => r.json())
         .then(data => {
           if (data.success) {
-            setSubscriptionMessage(`Subscription activated! Welcome to the ${data.plan} plan.`);
+            setSubscriptionMessage(`Subscription activated! Welcome to the ${data.plan.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} plan.`);
             loadUser();
             loadUsage();
           }

@@ -237,7 +237,7 @@ export default function ImageSearchTab({ onWinesReady, isLoading, batchId }) {
         </Label>
         <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 mb-3 leading-relaxed">
           Photos of wine menus, bottle labels, or any images containing wine names.<br />
-          Upload up to your remaining credits — sizes, vintages, and names extracted by AI.
+          Upload up to your remaining credits - sizes, vintages, and names extracted by AI.
         </p>
 
         {ocrUsage && ocrUsage.limit < 99999 && (
