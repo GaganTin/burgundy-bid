@@ -321,6 +321,18 @@ async function checkLookupLimit(userId, batchSize = 0) {
     }
 
     const plan = normalizePlan(uR.rows[0].subscription_plan);
+    const isFamily = plan === 'family';
+
+    // Family plan: unlimited lookups, no expiry
+    if (isFamily) {
+      const cR = await pool.query(
+        `SELECT COUNT(*) FROM wine_lookups WHERE user_id=$1 AND created_date >= date_trunc('month', NOW()) AND status != 'error'`,
+        [userId]
+      );
+      const used = parseInt(cR.rows[0].count, 10);
+      return { allowed: true, used, limit: 99999, remaining: 99999 - used, plan: 'family' };
+    }
+
     const creditsExpiryDate = uR.rows[0].credits_expiry_date;
 
     // Credits expired — 0 remaining regardless of plan
@@ -2102,8 +2114,8 @@ app.get('/admin/analytics/summary', authMiddleware, adminMiddleware, async (req,
       `),
       pool.query(`
         SELECT
-          COUNT(*) FILTER (WHERE subscription_plan LIKE '%_monthly'  AND subscription_plan NOT IN ('free','admin')) AS monthly_subs,
-          COUNT(*) FILTER (WHERE subscription_plan LIKE '%_annually' AND subscription_plan NOT IN ('free','admin')) AS annual_subs
+          COUNT(*) FILTER (WHERE subscription_plan LIKE '%_monthly'  AND subscription_plan NOT IN ('free','admin','family')) AS monthly_subs,
+          COUNT(*) FILTER (WHERE subscription_plan LIKE '%_annually' AND subscription_plan NOT IN ('free','admin','family')) AS annual_subs
         FROM users WHERE is_deleted IS NOT TRUE
       `),
       pool.query(`
@@ -3895,17 +3907,19 @@ app.get('/subscription/ocr-usage', authMiddleware, async (req, res) => {
     if (!uR.rowCount) return res.status(404).json({ error: 'User not found' });
     const plan = normalizePlan(uR.rows[0].subscription_plan);
     const isAdmin = uR.rows[0].role_type === 'admin';
+    const isFamily = plan === 'family';
+    const isUnlimited = isAdmin || isFamily;
     const isFree = plan === 'free';
     const bonusOcr = parseInt(uR.rows[0].bonus_ocr_credits || 0, 10);
     const creditsExpiryDate = uR.rows[0].credits_expiry_date;
 
     // Credits expired — report 0 remaining
-    if (!isAdmin && creditsExpiryDate && new Date(creditsExpiryDate) < new Date()) {
+    if (!isUnlimited && creditsExpiryDate && new Date(creditsExpiryDate) < new Date()) {
       return res.json({ used: 0, limit: 0, remaining: 0, plan, bonus_ocr_credits: bonusOcr, credits_expired: true, credits_expiry_date: creditsExpiryDate });
     }
 
     // Free plan: count all-time OCR usage (credits are lifetime, not monthly)
-    const usedQuery = (isAdmin || !isFree)
+    const usedQuery = (isUnlimited || !isFree)
       ? pool.query(
           `SELECT COUNT(*) AS used FROM ocr_requests WHERE user_id=$1 AND status='success' AND created_date >= date_trunc('month', NOW())`,
           [userId]
@@ -3918,8 +3932,8 @@ app.get('/subscription/ocr-usage', authMiddleware, async (req, res) => {
       pool.query('SELECT monthly_ocr_limit FROM wine_subscriptions WHERE plan_name=$1', [plan]),
       usedQuery,
     ]);
-    const baseOcrLimit = isAdmin ? 99999 : parseInt(limitR.rows[0]?.monthly_ocr_limit ?? 2, 10);
-    const limit = isAdmin ? 99999 : baseOcrLimit + bonusOcr;
+    const baseOcrLimit = isUnlimited ? 99999 : parseInt(limitR.rows[0]?.monthly_ocr_limit ?? 2, 10);
+    const limit = isUnlimited ? 99999 : baseOcrLimit + bonusOcr;
     const used  = parseInt(usedR.rows[0].used, 10);
     const daysUntilExpiry = creditsExpiryDate
       ? Math.ceil((new Date(creditsExpiryDate) - new Date()) / (1000 * 60 * 60 * 24))
@@ -4407,7 +4421,7 @@ app.post('/stripe/cancel-subscription', authMiddleware, async (req, res) => {
 });
 
 // Helper: compare plan tiers for upgrade vs downgrade detection
-const PLAN_TIER = { free: 0, basic_monthly: 1, basic_annually: 2, pro_monthly: 3, pro_annually: 4 };
+const PLAN_TIER = { free: 0, basic_monthly: 1, basic_annually: 2, pro_monthly: 3, pro_annually: 4, family: 5 };
 function planTier(name) { return PLAN_TIER[normalizePlan(name)] ?? 0; }
 
 // Preview the prorated charge for switching to a new plan mid-cycle
@@ -4941,7 +4955,7 @@ app.post('/ocr/image', authMiddleware, async (req, res) => {
   // Credits are counted by summing ocr_pages (each PDF page = 1 credit, each image = 1 credit)
   try {
     const uR = await pool.query('SELECT subscription_plan, role_type, bonus_ocr_credits FROM users WHERE id=$1', [userId]);
-    if (uR.rowCount && uR.rows[0].role_type !== 'admin') {
+    if (uR.rowCount && uR.rows[0].role_type !== 'admin' && normalizePlan(uR.rows[0].subscription_plan) !== 'family') {
       const plan = normalizePlan(uR.rows[0].subscription_plan);
       const isFree = plan === 'free';
       const bonusOcr = parseInt(uR.rows[0].bonus_ocr_credits || 0, 10);

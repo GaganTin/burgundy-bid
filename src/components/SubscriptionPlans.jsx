@@ -251,7 +251,7 @@ export default function SubscriptionPlans({
     fetch(`${API}/plans`)
       .then((r) => r.json())
       .then((data) => {
-        if (Array.isArray(data)) setRawPlans(data.filter(p => p.plan_name !== "admin"));
+        if (Array.isArray(data)) setRawPlans(data.filter(p => p.plan_name !== "admin" && p.plan_name !== "family"));
         else setPlansError("Failed to load plans");
       })
       .catch(() => setPlansError("Failed to load plans"));

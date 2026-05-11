@@ -1639,12 +1639,12 @@ function PlansTab({ users, usersLoading }) {
 
   // Plan display name normalizer
   const planLabel = (p) => {
-    const map = { free: "Free", basic: "Basic", basic_monthly: "Basic (Monthly)", basic_annually: "Basic (Annual)", pro: "Pro", pro_monthly: "Pro (Monthly)", pro_annually: "Pro (Annual)", admin: "Admin" };
+    const map = { free: "Free", basic: "Basic", basic_monthly: "Basic (Monthly)", basic_annually: "Basic (Annual)", pro: "Pro", pro_monthly: "Pro (Monthly)", pro_annually: "Pro (Annual)", admin: "Admin", family: "Family" };
     return map[p] || p;
   };
 
   // Group plans for display (only show key canonical plans in the editor)
-  const CANONICAL = ['free', 'basic_monthly', 'basic_annually', 'pro_monthly', 'pro_annually', 'admin'];
+  const CANONICAL = ['free', 'basic_monthly', 'basic_annually', 'pro_monthly', 'pro_annually', 'admin', 'family'];
   const shownPlans = plans.filter(p => CANONICAL.includes(p.plan_name));
 
   const selectedUser = userList.find(u => u.id === creditUserId);
@@ -1689,7 +1689,7 @@ function PlansTab({ users, usersLoading }) {
               <tbody>
                 {shownPlans.map(plan => {
                   const isEditing = editingPlan === plan.plan_name;
-                  const planColor = plan.plan_name.startsWith('pro') ? 'text-purple-600' : plan.plan_name.startsWith('basic') ? 'text-blue-600' : plan.plan_name === 'admin' ? 'text-[#800020]' : 'text-gray-500';
+                  const planColor = plan.plan_name.startsWith('pro') ? 'text-purple-600' : plan.plan_name.startsWith('basic') ? 'text-blue-600' : plan.plan_name === 'admin' ? 'text-[#800020]' : plan.plan_name === 'family' ? 'text-emerald-600' : 'text-gray-500';
                   return (
                     <tr key={plan.plan_name} className={`border-b border-gray-50 dark:border-gray-800 ${isEditing ? "bg-[#800020]/[0.02] dark:bg-[#800020]/5" : "hover:bg-gray-50/50 dark:hover:bg-gray-800/40"}`}>
                       <td className="px-4 py-3">

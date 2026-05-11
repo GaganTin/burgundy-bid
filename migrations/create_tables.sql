@@ -231,8 +231,10 @@ VALUES
    '["10x more credits than Basic","20,000 Lookup Credits per month","500 AI Image Credits","Cellar Tracker integration","Wine-Searcher integration","6-month history retention","Priority support"]'),
   ('pro_annually',   'Pro',   20000, 500,   0,     9600,
    '["10x more credits than Basic","20,000 Lookup Credits per month","500 AI Image Credits","Cellar Tracker integration","Wine-Searcher integration","6-month history retention","Priority support"]'),
-  ('admin',          'Admin', 99999, 99999, 0,     0,
-   '["Unlimited admin access"]')
+  ('admin',          'Admin',  99999, 99999, 0,     0,
+   '["Unlimited admin access"]'),
+  ('family',         'Family', 99999, 99999, 0,     0,
+   '["Unlimited Lookup Credits","Unlimited AI Image Credits","Cellar Tracker integration","Wine-Searcher integration"]')
 ON CONFLICT (plan_name) DO UPDATE
   SET monthly_lookup_limit = EXCLUDED.monthly_lookup_limit,
       monthly_ocr_limit    = EXCLUDED.monthly_ocr_limit,
