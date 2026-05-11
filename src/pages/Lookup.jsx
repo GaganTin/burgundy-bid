@@ -78,16 +78,17 @@ export default function Lookup() {
   const queryClient = useQueryClient();
 
   // Each tab: fetch batch metadata from server (db-backed)
-  const { data: singleBatches = { current: null, history: [] } } = useQuery({ queryKey: ['batches','single'], queryFn: () => fetchBatchesForTab('single') });
-  const { data: pasteBatches = { current: null, history: [] } } = useQuery({ queryKey: ['batches','paste'], queryFn: () => fetchBatchesForTab('paste') });
-  const { data: uploadBatches = { current: null, history: [] } } = useQuery({ queryKey: ['batches','upload'], queryFn: () => fetchBatchesForTab('upload') });
-  const { data: imageBatches = { current: null, history: [] } } = useQuery({ queryKey: ['batches','image'], queryFn: () => fetchBatchesForTab('image') });
+  const batchQueryOpts = { staleTime: 30_000, refetchOnWindowFocus: false };
+  const { data: singleBatches = { current: null, history: [] } } = useQuery({ queryKey: ['batches','single'], queryFn: () => fetchBatchesForTab('single'), ...batchQueryOpts });
+  const { data: pasteBatches = { current: null, history: [] } } = useQuery({ queryKey: ['batches','paste'], queryFn: () => fetchBatchesForTab('paste'), ...batchQueryOpts });
+  const { data: uploadBatches = { current: null, history: [] } } = useQuery({ queryKey: ['batches','upload'], queryFn: () => fetchBatchesForTab('upload'), ...batchQueryOpts });
+  const { data: imageBatches = { current: null, history: [] } } = useQuery({ queryKey: ['batches','image'], queryFn: () => fetchBatchesForTab('image'), ...batchQueryOpts });
 
   // Fetch grouped history (batches with wines) per tab so history is always available
-  const { data: singleHistoryFromServer = [] } = useQuery({ queryKey: ['batches_history','single'], queryFn: () => fetchBatchHistoryForTab('single') });
-  const { data: pasteHistoryFromServer = [] } = useQuery({ queryKey: ['batches_history','paste'], queryFn: () => fetchBatchHistoryForTab('paste') });
-  const { data: uploadHistoryFromServer = [] } = useQuery({ queryKey: ['batches_history','upload'], queryFn: () => fetchBatchHistoryForTab('upload') });
-  const { data: imageHistoryFromServer = [] } = useQuery({ queryKey: ['batches_history','image'], queryFn: () => fetchBatchHistoryForTab('image') });
+  const { data: singleHistoryFromServer = [] } = useQuery({ queryKey: ['batches_history','single'], queryFn: () => fetchBatchHistoryForTab('single'), ...batchQueryOpts });
+  const { data: pasteHistoryFromServer = [] } = useQuery({ queryKey: ['batches_history','paste'], queryFn: () => fetchBatchHistoryForTab('paste'), ...batchQueryOpts });
+  const { data: uploadHistoryFromServer = [] } = useQuery({ queryKey: ['batches_history','upload'], queryFn: () => fetchBatchHistoryForTab('upload'), ...batchQueryOpts });
+  const { data: imageHistoryFromServer = [] } = useQuery({ queryKey: ['batches_history','image'], queryFn: () => fetchBatchHistoryForTab('image'), ...batchQueryOpts });
 
   const singleCurrentId = singleBatches?.current || null;
   const singleHistoryIds = singleBatches?.history || [];
@@ -337,7 +338,7 @@ export default function Lookup() {
           // Refresh the result table incrementally as each wine completes
           if (/^Updated/i.test(msg)) {
             clearTimeout(refreshTimer);
-            refreshTimer = setTimeout(() => queryClient.invalidateQueries({ queryKey: qKey }), 1500);
+            refreshTimer = setTimeout(() => queryClient.invalidateQueries({ queryKey: qKey }), 300);
           }
           if (/finished/i.test(msg)) {
             clearTimeout(refreshTimer);
@@ -346,6 +347,7 @@ export default function Lookup() {
             setLookupProgressByTab(prev => { const np = { ...(prev || {}) }; delete np[tab]; return np; });
             queryClient.invalidateQueries({ queryKey: qKey });
             queryClient.invalidateQueries({ queryKey: ['batches', tab] });
+            queryClient.invalidateQueries({ queryKey: ['batches_history', tab] });
           }
         } catch (e) {}
       };
