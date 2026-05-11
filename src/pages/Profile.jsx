@@ -41,21 +41,21 @@ const TICKET_PRIORITIES = ['low', 'normal', 'high', 'urgent'];
 const FEEDBACK_CATEGORIES = ['feature', 'improvement', 'removal', 'design', 'performance', 'other'];
 
 const STATUS_BADGE = {
-  open:        { label: 'Open',        cls: 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' },
-  in_progress: { label: 'In Progress', cls: 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' },
-  resolved:    { label: 'Resolved',    cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' },
-  closed:      { label: 'Closed',      cls: 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400' },
-  submitted:   { label: 'Submitted',   cls: 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' },
-  reviewing:   { label: 'Reviewing',   cls: 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' },
-  planned:     { label: 'Planned',     cls: 'bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300' },
-  implemented: { label: 'Implemented', cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' },
-  declined:    { label: 'Declined',    cls: 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300' },
-  done:        { label: 'Done',        cls: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' },
+  open:        { label: 'Open' },
+  in_progress: { label: 'In Progress' },
+  resolved:    { label: 'Resolved' },
+  closed:      { label: 'Closed' },
+  submitted:   { label: 'Submitted' },
+  reviewing:   { label: 'Reviewing' },
+  planned:     { label: 'Planned' },
+  implemented: { label: 'Implemented' },
+  declined:    { label: 'Declined' },
+  done:        { label: 'Done' },
 };
 
 function StatusBadge({ status }) {
-  const s = STATUS_BADGE[status] || { label: status, cls: 'bg-gray-100 text-gray-500' };
-  return <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${s.cls}`}>{s.label}</span>;
+  const s = STATUS_BADGE[status] || { label: status };
+  return <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-white border border-gray-900 text-gray-900 dark:bg-transparent dark:border-gray-100 dark:text-gray-100">{s.label}</span>;
 }
 
 function ContactSupport() {
