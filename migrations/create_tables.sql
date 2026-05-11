@@ -222,7 +222,7 @@ INSERT INTO wine_subscriptions
   (plan_name, display_name, monthly_lookup_limit, monthly_ocr_limit, monthly_price_cents, annual_price_cents, features)
 VALUES
   ('free',           'Free',  20,    2,     0,     0,
-   '["20 Lookup Credits","2 AI Image Credits","Cellar Tracker integration","Wine-Searcher integration","6-month history retention"]'),
+   '["20 Lookup Credits","2 AI Image Credits","Cellar Tracker integration","Wine-Searcher integration"]'),
   ('basic_monthly',  'Basic', 2000,  50,    600,   0,
    '["2,000 Lookup Credits per month","50 AI Image Credits","Cellar Tracker integration","Wine-Searcher integration","6-month history retention","Premium support"]'),
   ('basic_annually', 'Basic', 2000,  50,    0,     6000,

@@ -24,7 +24,7 @@ function rowsToPlanList(rows, billing) {
         id: row.plan_name,
         name: row.display_name,
         price,
-        label: isFree ? "forever" : isAnnual ? "/ year" : "/ month",
+        label: isFree ? "/ first month only" : isAnnual ? "/ year" : "/ month",
         features: Array.isArray(row.features) ? row.features : JSON.parse(row.features || "[]"),
         popular: baseName === "pro",
       };
@@ -201,7 +201,7 @@ function PlanCard({ plan, billing, currentPlan, hasActiveSub, loading, setLoadin
         <h3 className="font-semibold text-gray-900 dark:text-white text-lg">{plan.name}</h3>
         <div className="flex items-baseline gap-1 mt-2">
           {plan.price === 0
-            ? <span className="text-3xl font-bold text-gray-900 dark:text-white">Free</span>
+            ? <><span className="text-3xl font-bold text-gray-900 dark:text-white">Free</span><span className="text-gray-400 text-sm ml-1">{plan.label}</span></>
             : <><span className="text-3xl font-bold text-gray-900 dark:text-white">${plan.price}</span><span className="text-gray-400 text-sm">{plan.label}</span></>}
         </div>
         {plan.savings && <p className="text-emerald-600 dark:text-emerald-400 text-xs font-medium mt-1">{plan.savings}</p>}
