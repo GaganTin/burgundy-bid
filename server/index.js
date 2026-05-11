@@ -4331,13 +4331,15 @@ app.post('/stripe/webhook', async (req, res) => {
       console.warn('[Referral] ticket award non-fatal:', e.message);
     }
 
-    // Record confirmed payment — only after successful activation
+    // Record confirmed payment — use invoice ID (in_xxx) when available so it
+    // matches Stripe's invoice list and deduplication works correctly.
     try {
+      const txId = session.invoice || session.id;
       await pool.query(
         `INSERT INTO users_payments(user_id,amount,currency,payment_method,payment_status,transaction_id,billing_interval)
          VALUES($1,$2,'usd','stripe','completed',$3,$4)
          ON CONFLICT (transaction_id) DO NOTHING`,
-        [userId, (session.amount_total || 0) / 100, session.id, billingInterval]
+        [userId, (session.amount_total || 0) / 100, txId, billingInterval]
       );
     } catch (e) { console.warn('[Stripe] Payment record insert (non-fatal):', e.message); }
 
@@ -4491,9 +4493,12 @@ app.get('/stripe/verify-session', authMiddleware, async (req, res) => {
         }
       }
 
-      // Idempotent: avoid double-inserting payment if webhook already did it
+      // Idempotent: avoid double-inserting payment if webhook already did it.
+      // Use invoice ID (in_xxx) when available — matches what activateSubscription stores.
+      const txId = session.invoice || session.id;
       const existing = await pool.query(
-        'SELECT id FROM users_payments WHERE transaction_id=$1', [session.id]
+        'SELECT id FROM users_payments WHERE transaction_id=$1 OR transaction_id=$2',
+        [txId, session.id]
       );
       if (!existing.rowCount) {
         const billingInterval = plan.endsWith('_annually') ? 'annual' : 'monthly';
@@ -4502,7 +4507,7 @@ app.get('/stripe/verify-session', authMiddleware, async (req, res) => {
             `INSERT INTO users_payments(user_id,amount,currency,payment_method,payment_status,transaction_id,billing_interval)
              VALUES($1,$2,'usd','stripe','completed',$3,$4)
              ON CONFLICT (transaction_id) DO NOTHING`,
-            [userId, (session.amount_total || 0) / 100, session.id, billingInterval]
+            [userId, (session.amount_total || 0) / 100, txId, billingInterval]
           );
         } catch (e) { /* non-fatal */ }
       }
@@ -4802,12 +4807,52 @@ app.post('/stripe/update-subscription', authMiddleware, async (req, res) => {
 // ── Invoice / payment history ────────────────────────────────────────────────
 app.get('/invoices', authMiddleware, async (req, res) => {
   try {
+    // ── Stripe is the source of truth when available ─────────────────────────
+    if (stripe) {
+      try {
+        const uR = await pool.query('SELECT stripe_customer_id FROM users WHERE id=$1', [req.user.id]);
+        const custId = uR.rows[0]?.stripe_customer_id;
+        if (custId) {
+          const list = await stripe.invoices.list({ customer: custId, limit: 100 });
+          const invoices = list.data
+            .filter(inv => inv.status === 'paid' && (inv.amount_paid || 0) > 0)
+            .map(inv => {
+              const stripeInterval = inv.lines?.data?.[0]?.price?.recurring?.interval;
+              const billingInterval = stripeInterval === 'year' ? 'annual' : stripeInterval === 'month' ? 'monthly' : null;
+              return {
+                id: inv.id,
+                source: 'stripe',
+                date: new Date(inv.created * 1000).toISOString(),
+                amount: (inv.amount_paid || 0) / 100,
+                currency: inv.currency || 'usd',
+                method: 'stripe',
+                status: inv.status,
+                reference: inv.number || inv.id,
+                billing_interval: billingInterval,
+                description: inv.lines?.data?.[0]?.description || 'Subscription',
+                invoice_url: inv.hosted_invoice_url || null,
+                invoice_pdf: inv.invoice_pdf || null,
+              };
+            })
+            .sort((a, b) => new Date(b.date) - new Date(a.date));
+          return res.json(invoices);
+        }
+      } catch (e) {
+        console.warn('[invoices] Stripe fetch failed, falling back to DB:', e.message);
+      }
+    }
+
+    // ── DB fallback (no Stripe customer or Stripe unavailable) ───────────────
+    // Exclude checkout session IDs (cs_xxx) — those are not real invoice records.
     const dbR = await pool.query(
       `SELECT id, amount, currency, payment_method, payment_status, transaction_id, created_date, billing_interval
-       FROM users_payments WHERE user_id=$1 ORDER BY created_date DESC LIMIT 100`,
+       FROM users_payments
+       WHERE user_id=$1
+         AND (transaction_id IS NULL OR transaction_id NOT LIKE 'cs_%')
+       ORDER BY created_date DESC LIMIT 100`,
       [req.user.id]
     );
-    const dbInvoices = dbR.rows.map(r => ({
+    const fallback = dbR.rows.map(r => ({
       id: r.id,
       source: 'payment',
       date: r.created_date,
@@ -4818,45 +4863,10 @@ app.get('/invoices', authMiddleware, async (req, res) => {
       reference: r.transaction_id,
       billing_interval: r.billing_interval || null,
       description: 'Subscription payment',
+      invoice_url: null,
+      invoice_pdf: null,
     }));
-
-    // Also fetch Stripe invoices if configured
-    let stripeInvoices = [];
-    if (stripe) {
-      try {
-        const uR = await pool.query('SELECT stripe_customer_id FROM users WHERE id=$1', [req.user.id]);
-        const custId = uR.rows[0]?.stripe_customer_id;
-        if (custId) {
-          const list = await stripe.invoices.list({ customer: custId, limit: 50 });
-          stripeInvoices = list.data.map(inv => {
-            const stripeInterval = inv.lines?.data?.[0]?.price?.recurring?.interval;
-            const billingInterval = stripeInterval === 'year' ? 'annual' : stripeInterval === 'month' ? 'monthly' : null;
-            return {
-              id: inv.id,
-              source: 'stripe',
-              date: new Date(inv.created * 1000).toISOString(),
-              amount: (inv.amount_paid || 0) / 100,
-              currency: inv.currency || 'usd',
-              method: 'stripe',
-              status: inv.status,
-              reference: inv.number || inv.id,
-              billing_interval: billingInterval,
-              description: inv.lines?.data?.[0]?.description || 'Subscription',
-              invoice_url: inv.hosted_invoice_url,
-              invoice_pdf: inv.invoice_pdf,
-            };
-          });
-        }
-      } catch (e) {
-        console.warn('[invoices] Stripe fetch failed:', e.message);
-      }
-    }
-
-    // Merge: prefer Stripe invoices when transaction_id matches Stripe invoice id
-    const stripeIds = new Set(stripeInvoices.map(i => i.id));
-    const mergedDb = dbInvoices.filter(d => !stripeIds.has(d.reference));
-    const all = [...stripeInvoices, ...mergedDb].sort((a, b) => new Date(b.date) - new Date(a.date));
-    return res.json(all);
+    return res.json(fallback);
   } catch (err) {
     console.error('[invoices]', err);
     res.status(500).json({ error: String(err) });
