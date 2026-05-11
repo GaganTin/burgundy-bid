@@ -4446,6 +4446,64 @@ app.post('/stripe/webhook', async (req, res) => {
         }
       }
     }
+
+    // Fires for every successful Stripe charge: renewals, upgrades, and initial checkouts.
+    // ON CONFLICT ensures no double-counting when checkout.session.completed already wrote the row.
+    if (event.type === 'invoice.payment_succeeded') {
+      const inv = event.data.object;
+      // Skip $0 invoices (e.g. trials, free-plan changes) and non-subscription invoices
+      if ((inv.amount_paid || 0) > 0 && inv.subscription) {
+        try {
+          const uR = await pool.query('SELECT id FROM users WHERE stripe_customer_id=$1', [inv.customer]);
+          if (uR.rowCount) {
+            const userId = uR.rows[0].id;
+            const stripeInterval = inv.lines?.data?.[0]?.price?.recurring?.interval;
+            const billingInterval = stripeInterval === 'year' ? 'annual' : stripeInterval === 'month' ? 'monthly' : null;
+            await pool.query(
+              `INSERT INTO users_payments(user_id, amount, currency, payment_method, payment_status, transaction_id, billing_interval)
+               VALUES($1, $2, $3, 'stripe', 'completed', $4, $5)
+               ON CONFLICT (transaction_id) DO NOTHING`,
+              [userId, (inv.amount_paid / 100), inv.currency || 'usd', inv.id, billingInterval]
+            );
+            // Keep subscription_renewal_date current after each renewal
+            if (inv.lines?.data?.[0]?.period?.end) {
+              const nextRenewal = new Date(inv.lines.data[0].period.end * 1000).toISOString();
+              await pool.query(
+                `UPDATE users SET subscription_renewal_date=$1 WHERE id=$2`,
+                [nextRenewal, userId]
+              );
+            }
+            console.log(`[Stripe] invoice.payment_succeeded recorded: user=${userId} amount=${inv.amount_paid / 100} invoice=${inv.id}`);
+          }
+        } catch (e) {
+          console.warn('[Stripe] invoice.payment_succeeded handler (non-fatal):', e.message);
+        }
+      }
+    }
+
+    // Log failed subscription payment attempts — written to activity log, not users_payments.
+    // Failed payments are never counted as revenue.
+    if (event.type === 'invoice.payment_failed') {
+      const inv = event.data.object;
+      try {
+        const uR = await pool.query('SELECT id FROM users WHERE stripe_customer_id=$1', [inv.customer]);
+        if (uR.rowCount) {
+          logActivity(uR.rows[0].id, 'subscription_payment_failed', {
+            invoice_id: inv.id,
+            amount_due: (inv.amount_due || 0) / 100,
+            currency: inv.currency,
+            attempt_count: inv.attempt_count,
+            next_payment_attempt: inv.next_payment_attempt
+              ? new Date(inv.next_payment_attempt * 1000).toISOString() : null,
+            failure_reason: inv.last_finalization_error?.message || null,
+          });
+          console.warn(`[Stripe] invoice.payment_failed: user=${uR.rows[0].id} invoice=${inv.id} attempts=${inv.attempt_count}`);
+        }
+      } catch (e) {
+        console.warn('[Stripe] invoice.payment_failed handler (non-fatal):', e.message);
+      }
+    }
+
   } catch (e) {
     console.error('[Stripe] Webhook processing error:', e);
     return res.status(500).json({ error: String(e) });
