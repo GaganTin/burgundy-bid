@@ -894,13 +894,8 @@ export default function Profile() {
 
                 {/* Current plan summary */}
                 {(() => {
-                  const planDetails = {
-                    free:  { label: "Free",  color: "text-gray-500" },
-                    basic: { label: "Basic", color: "text-blue-600" },
-                    pro:   { label: "Pro",   color: "text-[#800020]" },
-                    admin: { label: "Admin", color: "text-[#800020]" },
-                  };
-                  const plan = planDetails[userPlan] || planDetails.free;
+                  const planLabels = { free: "Free", basic: "Basic", pro: "Pro", admin: "Admin", family: "Family" };
+                  const planLabel = planLabels[userPlan] || "Free";
                   const planLookupLimit = MONTHLY_LIMIT === 9999 || MONTHLY_LIMIT >= 99999 ? "Unlimited" : MONTHLY_LIMIT.toLocaleString();
                   return (
                     <Card className="border-gray-100 dark:border-gray-800 dark:bg-gray-900 shadow-sm">
@@ -909,8 +904,8 @@ export default function Profile() {
                           <div className="flex items-center gap-2">
                             <CreditCard className="w-4 h-4 text-[#800020]" />
                             <span className="text-sm font-semibold text-gray-900 dark:text-white">Current Plan</span>
-                            <span className={`text-xs font-bold uppercase px-2 py-0.5 rounded-full ${userPlan === "pro" || userPlan === "admin" ? "bg-[#800020]/10 text-[#800020]" : userPlan === "basic" ? "bg-blue-50 text-blue-600" : "bg-gray-100 text-gray-500"}`}>
-                              {plan.label}
+                            <span className="text-xs font-bold uppercase px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-600">
+                              {planLabel}
                             </span>
                           </div>
                           {isUpgradable && (
@@ -922,14 +917,14 @@ export default function Profile() {
                         <div className="grid grid-cols-2 gap-3">
                           <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
                             <p className="text-xs text-gray-400 mb-0.5">Wine Lookups</p>
-                            <p className={`text-lg font-bold ${plan.color}`}>{planLookupLimit}<span className="text-xs font-normal text-gray-400 ml-1">/ month</span></p>
+                            <p className="text-lg font-bold text-gray-900 dark:text-white">{planLookupLimit}<span className="text-xs font-normal text-gray-400 ml-1">/ month</span></p>
                             {(usage?.bonus_lookup_credits > 0) && (
                               <p className="text-xs text-amber-600 font-medium mt-0.5">+{usage.bonus_lookup_credits} bonus credits</p>
                             )}
                           </div>
                           <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
                             <p className="text-xs text-gray-400 mb-0.5">AI Image Search</p>
-                            <p className={`text-lg font-bold ${plan.color}`}>
+                            <p className="text-lg font-bold text-gray-900 dark:text-white">
                               {ocrUsage
                                 ? (ocrUsage.limit === 99999
                                   ? "Unlimited"
@@ -1395,62 +1390,63 @@ export default function Profile() {
                   <div className="flex justify-center py-6">
                     <div className="w-5 h-5 border-2 border-gray-200 border-t-[#800020] rounded-full animate-spin" />
                   </div>
-                ) : referralTickets.length === 0 ? (
-                  <p className="text-sm text-gray-400 text-center py-4">No tickets yet. Start referring friends!</p>
                 ) : (
                   <div className="space-y-2.5">
-                    {referralTickets.map(ticket => {
-                      const isAvailable = ticket.status === 'available';
-                      const isActive    = ticket.status === 'active';
-                      const isExpired   = ticket.status === 'expired';
-                      const expiresDate = new Date(isActive ? ticket.applies_until : ticket.expires_at);
-                      const daysLeft    = Math.ceil((expiresDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-                      const applying    = applyingTicketId === ticket.id;
+                    {(() => {
+                      const visible = referralTickets.filter(t => t.status !== 'expired');
+                      if (visible.length === 0) return (
+                        <p className="text-sm text-gray-400 text-center py-4">No tickets yet. Start referring friends!</p>
+                      );
+                      // ID of the available ticket with the earliest expiry — auto-applied when any Apply is clicked
+                      const earliestAvailable = visible
+                        .filter(t => t.status === 'available')
+                        .sort((a, b) => new Date(a.expires_at).getTime() - new Date(b.expires_at).getTime())[0];
 
-                      return (
-                        <div key={ticket.id}
-                          className={`rounded-xl border p-4 ${isExpired ? 'border-gray-100 dark:border-gray-800 opacity-50' : isActive ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50/40 dark:bg-emerald-900/10' : 'border-gray-200 dark:border-gray-700'}`}>
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap mb-1.5">
-                                <Ticket className="w-3.5 h-3.5 text-[#800020] flex-shrink-0" />
-                                <span className="text-sm font-semibold text-gray-900 dark:text-white">
-                                  {ticket.lookup_credits.toLocaleString()} lookups + {ticket.ocr_credits} AI credits
-                                </span>
-                                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
-                                  isActive   ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400' :
-                                  isExpired  ? 'bg-gray-100 dark:bg-gray-800 text-gray-400' :
-                                               'bg-amber-50 text-amber-700 border border-amber-200'
-                                }`}>
-                                  {isActive ? 'Active' : isExpired ? 'Expired' : 'Available'}
-                                </span>
-                              </div>
-                              <p className="text-xs text-gray-400">
-                                Earned {new Date(ticket.earned_at).toLocaleDateString()} ·{' '}
-                                {isExpired
-                                  ? 'Expired'
-                                  : isActive
+                      return visible.map(ticket => {
+                        const isAvailable = ticket.status === 'available';
+                        const isActive    = ticket.status === 'active';
+                        const expiresDate = new Date(isActive ? ticket.applies_until : ticket.expires_at);
+                        const daysLeft    = Math.ceil((expiresDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+                        const applying    = applyingTicketId === ticket.id;
+                        // Apply button targets the earliest-expiry available ticket, not necessarily this one
+                        const applyTarget = earliestAvailable?.id ?? ticket.id;
+
+                        return (
+                          <div key={ticket.id}
+                            className={`rounded-xl border p-4 ${isActive ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50/40 dark:bg-emerald-900/10' : 'border-gray-200 dark:border-gray-700'}`}>
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1.5">
+                                  <Ticket className="w-3.5 h-3.5 text-[#800020] flex-shrink-0" />
+                                  <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                                    {ticket.lookup_credits.toLocaleString()} lookups + {ticket.ocr_credits} AI credits
+                                  </span>
+                                </div>
+                                <p className="text-xs text-gray-400">Earned {new Date(ticket.earned_at).toLocaleDateString()}</p>
+                                <p className="text-xs text-gray-400">
+                                  {isActive
                                     ? `Active until ${expiresDate.toLocaleDateString()} (${Math.max(0, daysLeft)}d left)`
                                     : `Expires ${expiresDate.toLocaleDateString()} (${Math.max(0, daysLeft)}d left)`}
-                              </p>
+                                </p>
+                              </div>
+                              {isAvailable && (
+                                <Button size="sm"
+                                  className="h-7 text-xs bg-[#800020] hover:bg-[#6b001b] text-white flex-shrink-0"
+                                  onClick={() => applyTicket(applyTarget)}
+                                  disabled={!!applyingTicketId}>
+                                  {applying ? 'Applying…' : 'Apply'}
+                                </Button>
+                              )}
                             </div>
-                            {isAvailable && (
-                              <Button size="sm"
-                                className="h-7 text-xs bg-[#800020] hover:bg-[#6b001b] text-white flex-shrink-0"
-                                onClick={() => applyTicket(ticket.id)}
-                                disabled={applying}>
-                                {applying ? 'Applying…' : 'Apply'}
-                              </Button>
+                            {isActive && (
+                              <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-2 font-medium">
+                                Credits are active - use them before end of this month
+                              </p>
                             )}
                           </div>
-                          {isActive && (
-                            <p className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-2 font-medium">
-                              Credits are active — use them before end of this month
-                            </p>
-                          )}
-                        </div>
-                      );
-                    })}
+                        );
+                      });
+                    })()}
                   </div>
                 )}
                 {applyError && (
