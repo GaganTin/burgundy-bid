@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS proxies (
 );
 ALTER TABLE proxies ADD COLUMN IF NOT EXISTS reserved_for_user_id UUID REFERENCES users(id);
 
+-- UPDATE proxies
+-- SET reserved_for_user_id = (SELECT id FROM users WHERE email = 'zanrow.co@gmail.com')
+-- WHERE id = 'd-17391610430';
+
 -- ── users_connections ─────────────────────────────────────────────────────────
 -- Stores credentials for external wine sites (CellarTracker, Wine-Searcher).
 -- proxy_id links to the proxies table: one dedicated residential IP per user,
