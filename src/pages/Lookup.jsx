@@ -126,6 +126,12 @@ export default function Lookup() {
   const allUploadIds = [uploadCurrentId, ...uploadHistoryIds].filter(Boolean);
   const allImageIds = [imageCurrentId, ...imageHistoryIds].filter(Boolean);
 
+  const pollWhilePending = (query) => {
+    const data = query.state.data;
+    if (!Array.isArray(data) || data.length === 0) return false;
+    return data.some(w => !w.is_deleted && w.status === 'pending') ? 3_000 : false;
+  };
+
   const { data: singleAllData = [] } = useQuery({
     queryKey: ["wine_lookups_single_all", allSingleIds],
     queryFn: async () => {
@@ -136,6 +142,7 @@ export default function Lookup() {
       return pages.flat();
     },
     enabled: allSingleIds.length > 0,
+    refetchInterval: pollWhilePending,
   });
 
   const { data: pasteAllData = [] } = useQuery({
@@ -148,6 +155,7 @@ export default function Lookup() {
       return pages.flat();
     },
     enabled: allPasteIds.length > 0,
+    refetchInterval: pollWhilePending,
   });
 
   const { data: uploadAllData = [] } = useQuery({
@@ -160,6 +168,7 @@ export default function Lookup() {
       return pages.flat();
     },
     enabled: allUploadIds.length > 0,
+    refetchInterval: pollWhilePending,
   });
 
   const { data: imageAllData = [] } = useQuery({
@@ -172,6 +181,7 @@ export default function Lookup() {
       return pages.flat();
     },
     enabled: allImageIds.length > 0,
+    refetchInterval: pollWhilePending,
   });
 
   // Exclude deleted lookup rows from client-side data (server API already excludes them,
