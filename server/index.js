@@ -3079,7 +3079,10 @@ app.get('/lookup/:id/stream', authMiddleware, (req, res) => {
   if (!sseSubscribers.has(id)) sseSubscribers.set(id, new Set());
   sseSubscribers.get(id).add(res);
 
+  const heartbeat = setInterval(() => { try { res.write(': ping\n\n'); } catch (e) {} }, 25_000);
+
   req.on('close', () => {
+    clearInterval(heartbeat);
     const set = sseSubscribers.get(id);
     if (set) set.delete(res);
   });
@@ -4321,7 +4324,7 @@ app.post('/stripe/webhook', async (req, res) => {
           const ref = referrerR.rows[0];
           sendEmail(ref.email, "You've earned a Burgundy Bid referral reward!", emailTemplate(`
             <p>Hi ${ref.full_name || 'there'},</p>
-            <p>Great news — a friend you referred has just subscribed to Burgundy Bid!</p>
+            <p>Great news - a friend you referred has just subscribed to Burgundy Bid!</p>
             <p>You've earned a <strong>bonus credit ticket</strong> with <strong>1,000 lookup credits</strong> and <strong>100 AI Image credits</strong>.</p>
             <p>Head to your Profile page and open your <strong>Gift Box</strong> to apply the ticket. You have one year before it expires.</p>
           `)).catch(() => {});

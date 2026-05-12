@@ -351,7 +351,16 @@ export default function Lookup() {
           }
         } catch (e) {}
       };
-      es.onerror = () => {};
+      es.onerror = () => {
+        if (es.readyState === EventSource.CLOSED) {
+          clearTimeout(refreshTimer);
+          setIsLookingByTab(prev => ({ ...(prev || {}), [tab]: false }));
+          setLookupProgressByTab(prev => { const np = { ...(prev || {}) }; delete np[tab]; return np; });
+          queryClient.invalidateQueries({ queryKey: qKey });
+          queryClient.invalidateQueries({ queryKey: ['batches', tab] });
+          queryClient.invalidateQueries({ queryKey: ['batches_history', tab] });
+        }
+      };
     } catch (err) {
       setIsLookingByTab(prev => ({ ...(prev || {}), [tab]: false }));
       setLookupProgressByTab(prev => { const np = { ...(prev || {}) }; delete np[tab]; return np; });

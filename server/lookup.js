@@ -1679,7 +1679,7 @@ async function runLookupForBatch(batchId, logger = () => {}, options = {}) {
            update.ws_avg, update.ws_min, update.ws_url, update.ws_matched, update.ws_error,
            matched_as, update.status, wsCurrency, ctCurrency, rec.id]
         );
-        console.log(`Updated ${rec.wine_name}: status=${update.status}`);
+        logger(`Updated ${rec.wine_name}`);
       } catch (err) {
         console.log(`Error for ${rec.wine_name}: ${String(err)}`);
         try { await pool.query('UPDATE wine_lookups SET status=$1, updated_date=now() WHERE id=$2', ['error', rec.id]); } catch (e) {}
