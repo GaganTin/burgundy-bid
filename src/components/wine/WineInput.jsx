@@ -177,7 +177,7 @@ export default function WineInput({ onWinesSubmit, isLoading, onTabChange, looku
 
         {/* Single Search */}
         <TabsContent value="single" className="mt-0">
-          <div className="flex flex-col sm:flex-row gap-3 sm:items-end">
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-start">
             <div className="w-full sm:w-32 sm:flex-shrink-0">
               <Label className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide">Size</Label>
               <Select value={singleWine.size} onValueChange={val => setSingleWine({ ...singleWine, size: val })}>
@@ -207,13 +207,14 @@ export default function WineInput({ onWinesSubmit, isLoading, onTabChange, looku
                 className="mt-1.5 h-11 border-gray-200 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 focus:border-gray-400 focus:ring-0 text-[15px]" />
             </div>
             <div className="sm:flex-shrink-0">
+              <span className="block text-xs font-medium uppercase tracking-wide invisible select-none">.</span>
               <Button onClick={handleSingleSubmit} disabled={!singleWine.name.trim() || !String(singleWine.vintage).trim() || isLoading || lookupLimitReached}
-                className="w-full sm:w-auto h-11 px-6 bg-[#800020] hover:bg-[#6b001b] text-white font-medium whitespace-nowrap">
+                className="mt-1.5 w-full sm:w-auto h-11 px-6 bg-[#800020] hover:bg-[#6b001b] text-white font-medium whitespace-nowrap">
                 <Search className="w-4 h-4 mr-2" /> Look Up
               </Button>
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">Prices load in ~30-60 secs</p>
             </div>
           </div>
-          <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">Prices load in ~30-60 secs</p>
         </TabsContent>
 
         {/* Paste List */}
