@@ -176,8 +176,8 @@ export default function ImageSearchTab({ onWinesReady, isLoading, batchId }) {
     if (status === 'review' && fileItems.length > 0) {
       try {
         sessionStorage.setItem(OCR_SESSION_KEY, JSON.stringify({
-          fileItems: fileItems.map(({ id, wines, error, status: s, expanded, file, name, _debug }) => ({
-            id, wines, error, status: s, expanded, _debug,
+          fileItems: fileItems.map(({ id, wines, error, status: s, expanded, file, name }) => ({
+            id, wines, error, status: s, expanded,
             name: (/** @type {any} */(file))?.name || name || null,
             url: null, // blob URLs expire; thumbnails won't show on restore
           })),
@@ -214,7 +214,6 @@ export default function ImageSearchTab({ onWinesReady, isLoading, batchId }) {
         wines: [],
         error: null,
         expanded: true,
-        _debug: `reported:${r.origType||'?'} sniffed:${r.sniffedType} converted:${r.converted}${r.conversionError ? ' err:'+r.conversionError : ''}`,
       }));
       return [...prev, ...toAdd];
     });
@@ -410,10 +409,7 @@ export default function ImageSearchTab({ onWinesReady, isLoading, batchId }) {
           {fileItems.map(item => (
             <div key={item.id} className="flex items-center gap-3 bg-gray-50 dark:bg-gray-800 rounded-lg px-3 py-2">
               <img src={item.url} alt={item.file.name} className="w-10 h-10 object-cover rounded-md flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-gray-700 dark:text-gray-300 truncate">{item.file.name}</p>
-                {item._debug && <p className="text-[10px] text-gray-400 dark:text-gray-500 truncate">{item._debug}</p>}
-              </div>
+              <p className="flex-1 text-sm text-gray-700 dark:text-gray-300 truncate">{item.file.name}</p>
               <button onClick={() => removeFileItem(item.id)} className="text-gray-300 hover:text-red-500 transition-colors">
                 <X className="w-4 h-4" />
               </button>
@@ -518,10 +514,7 @@ export default function ImageSearchTab({ onWinesReady, isLoading, batchId }) {
               className="w-full flex items-center gap-3 px-3 py-2 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-750 transition-colors text-left"
             >
               <img src={item.url} alt={item.file?.name ?? item.name ?? ''} className="w-8 h-8 object-cover rounded flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                <span className="block text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{item.file?.name ?? item.name ?? ''}</span>
-                {item._debug && <span className="block text-[9px] text-gray-400 dark:text-gray-500 truncate">{item._debug}</span>}
-              </div>
+              <span className="flex-1 text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{item.file?.name ?? item.name ?? ''}</span>
               {item.status === "error"
                 ? <span className="text-[11px] text-red-500 flex-shrink-0 text-right max-w-[120px] truncate" title={item.error}>{item.error?.slice(0, 40)}</span>
                 : <span className="text-[11px] text-gray-400 flex-shrink-0">{item.wines.length} wine{item.wines.length !== 1 ? "s" : ""}</span>
