@@ -8,17 +8,29 @@ import { createPageUrl } from "@/utils";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
 
-// Safari on iOS passes camera photos as HEIC blobs, which <img> can't render via blob URLs.
-// Convert any non-web-safe format to JPEG using canvas so preview and OCR both work.
+// iOS camera produces HEIC files. Safari can decode HEIC from data: URLs (system decoder)
+// but NOT from blob: URLs, so createObjectURL on a HEIC file always shows "Load failed".
+// Fix: read as data URL → load into <img> (iOS decodes it) → draw to canvas → export JPEG.
 const WEB_SAFE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
 async function normalizeImageFile(file) {
   if (WEB_SAFE_TYPES.includes(file.type)) return file;
   try {
-    const bitmap = await createImageBitmap(file);
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = reject;
+      i.src = dataUrl;
+    });
     const canvas = document.createElement('canvas');
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
-    canvas.getContext('2d').drawImage(bitmap, 0, 0);
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    canvas.getContext('2d').drawImage(img, 0, 0);
     const blob = await new Promise((res, rej) =>
       canvas.toBlob(b => b ? res(b) : rej(new Error('toBlob failed')), 'image/jpeg', 0.92)
     );
