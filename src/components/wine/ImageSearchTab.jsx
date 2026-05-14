@@ -8,11 +8,43 @@ import { createPageUrl } from "@/utils";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
 
-// iOS camera sets file.type="image/jpeg" and name="image.jpg" but the bytes are HEIC.
-// We cannot trust file.type. Instead: test-render via blob URL first — fast path for real
-// JPEGs. If that fails, fall back to data URL (iOS system decoder handles HEIC data URLs)
-// then convert to JPEG via canvas so both preview and OCR receive a valid JPEG.
+// Read the first 16 bytes to detect the true format, ignoring file.type which iOS lies about.
+// iOS camera captures set file.type="image/jpeg"/name="image.jpg" but the bytes are HEIC.
+async function sniffMime(/** @type {File} */ file) {
+  return new Promise(resolve => {
+    const fr = new FileReader();
+    fr.onload = e => {
+      const b = new Uint8Array(/** @type {ArrayBuffer} */ (e.target?.result));
+      // JPEG
+      if (b[0] === 0xff && b[1] === 0xd8) return resolve('image/jpeg');
+      // PNG
+      if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return resolve('image/png');
+      // WebP (RIFF....WEBP)
+      if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+          b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return resolve('image/webp');
+      // GIF
+      if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return resolve('image/gif');
+      // HEIC/HEIF — ISO base-media file with 'ftyp' box starting at byte 4
+      if (b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) {
+        const brand = String.fromCharCode(b[8], b[9], b[10], b[11]);
+        if (['heic','heis','hevc','hevx','heim','heix','hevm','hevs'].includes(brand)) return resolve('image/heic');
+        if (['mif1','msf1'].includes(brand)) return resolve('image/heif');
+        // Generic ISOBMFF — still try as HEIC
+        return resolve('image/heic');
+      }
+      resolve(file.type || 'image/jpeg');
+    };
+    fr.onerror = () => resolve(file.type || 'image/jpeg');
+    fr.readAsArrayBuffer(file.slice(0, 16));
+  });
+}
+
+// Returns { file, origType, sniffedType, converted } for debug display.
 async function normalizeImageFile(file) {
+  const origType = file.type;
+  const sniffedType = await sniffMime(file);
+
+  // Fast path: blob URL renders directly (real JPEG/PNG/WebP from photo library)
   const testUrl = URL.createObjectURL(file);
   const canRender = await new Promise(resolve => {
     const img = new Image();
@@ -20,31 +52,41 @@ async function normalizeImageFile(file) {
     img.onerror = () => { URL.revokeObjectURL(testUrl); resolve(false); };
     img.src = testUrl;
   });
-  if (canRender) return file;
+  if (canRender) return { file, origType, sniffedType, converted: false };
 
+  // Blob URL failed. Use sniffed MIME type (not file.type) in the data URL so
+  // iOS system decoder gets the correct format hint and can decode the HEIC bytes.
   try {
-    const dataUrl = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
+    const rawBase64 = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(/** @type {string} */ (fr.result).split(',')[1]);
+      fr.onerror = reject;
+      fr.readAsDataURL(file);
     });
+    const dataUrl = `data:${sniffedType};base64,${rawBase64}`;
     const img = await new Promise((resolve, reject) => {
       const i = new Image();
       i.onload = () => resolve(i);
       i.onerror = reject;
       i.src = dataUrl;
     });
+    // Scale down to avoid canvas memory limits on older mobile devices
+    const MAX_DIM = 4096;
+    let w = img.naturalWidth, h = img.naturalHeight;
+    if (w > MAX_DIM || h > MAX_DIM) {
+      const s = MAX_DIM / Math.max(w, h);
+      w = Math.round(w * s); h = Math.round(h * s);
+    }
     const canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
-    canvas.getContext('2d').drawImage(img, 0, 0);
+    canvas.width = w; canvas.height = h;
+    canvas.getContext('2d').drawImage(img, 0, 0, w, h);
     const blob = await new Promise((res, rej) =>
       canvas.toBlob(b => b ? res(b) : rej(new Error('toBlob failed')), 'image/jpeg', 0.92)
     );
-    return new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
-  } catch {
-    return file;
+    const converted = new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
+    return { file: converted, origType, sniffedType, converted: true };
+  } catch (err) {
+    return { file, origType, sniffedType, converted: false, conversionError: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -92,7 +134,7 @@ const OCR_SESSION_KEY = 'ocr_tab_review';
 export default function ImageSearchTab({ onWinesReady, isLoading, batchId }) {
   // status: 'idle' | 'preview' | 'processing' | 'review'
   const [status, setStatus]       = useState("idle");
-  const [fileItems, setFileItems] = useState([]); // [{id,file,url,status,wines,error,expanded}]
+  const [fileItems, setFileItems] = useState(/** @type {any[]} */ ([])); // [{id,file,url,status,wines,error,expanded}]
   const [ocrUsage, setOcrUsage]   = useState(null);
   const [dragOver, setDragOver]   = useState(false);
   const fileRef  = useRef();
@@ -146,20 +188,20 @@ export default function ImageSearchTab({ onWinesReady, isLoading, batchId }) {
     const available = ocrUsage
       ? (ocrUsage.limit >= 99999 ? 150 : ocrUsage.remaining)
       : 0;
-    const imageFiles = incoming.filter(f => f.type.startsWith("image/"));
-    // Normalize HEIC/HEIF → JPEG so preview renders and OCR accepts the file
-    const normalized = await Promise.all(imageFiles.map(normalizeImageFile));
+    const imageFiles = incoming.filter(f => f.type.startsWith("image/") || f.type === '');
+    const results = await Promise.all(imageFiles.map(normalizeImageFile));
     setFileItems(prev => {
       const slots = available - prev.length;
       if (slots <= 0) return prev;
-      const toAdd = normalized.slice(0, slots).map(f => ({
+      const toAdd = results.slice(0, slots).map(r => ({
         id: makeId(),
-        file: f,
-        url: URL.createObjectURL(f),
+        file: r.file,
+        url: URL.createObjectURL(r.file),
         status: "pending",
         wines: [],
         error: null,
         expanded: true,
+        _debug: `reported:${r.origType||'?'} sniffed:${r.sniffedType} converted:${r.converted}${r.conversionError ? ' err:'+r.conversionError : ''}`,
       }));
       return [...prev, ...toAdd];
     });
@@ -355,7 +397,10 @@ export default function ImageSearchTab({ onWinesReady, isLoading, batchId }) {
           {fileItems.map(item => (
             <div key={item.id} className="flex items-center gap-3 bg-gray-50 dark:bg-gray-800 rounded-lg px-3 py-2">
               <img src={item.url} alt={item.file.name} className="w-10 h-10 object-cover rounded-md flex-shrink-0" />
-              <p className="flex-1 text-sm text-gray-700 dark:text-gray-300 truncate">{item.file.name}</p>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-gray-700 dark:text-gray-300 truncate">{item.file.name}</p>
+                {item._debug && <p className="text-[10px] text-gray-400 dark:text-gray-500 truncate">{item._debug}</p>}
+              </div>
               <button onClick={() => removeFileItem(item.id)} className="text-gray-300 hover:text-red-500 transition-colors">
                 <X className="w-4 h-4" />
               </button>
