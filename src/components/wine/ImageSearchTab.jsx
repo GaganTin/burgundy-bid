@@ -70,8 +70,9 @@ async function normalizeImageFile(file) {
       i.onerror = reject;
       i.src = dataUrl;
     });
-    // Scale down to avoid canvas memory limits on older mobile devices
-    const MAX_DIM = 4096;
+    // Keep output under ~1.5MB so iOS Safari doesn't abort the OCR fetch body.
+    // Library photos are auto-resized by iOS; camera captures are full-res (12MP+).
+    const MAX_DIM = 2048;
     let w = img.naturalWidth, h = img.naturalHeight;
     if (w > MAX_DIM || h > MAX_DIM) {
       const s = MAX_DIM / Math.max(w, h);
@@ -101,16 +102,28 @@ function fileToBase64(file) {
 
 async function runOcr(file, signal) {
   const token = localStorage.getItem("app_access_token");
-  const imageBase64 = await fileToBase64(file);
-  const res = await fetch(`${API_BASE}/ocr/image`, {
-    method: "POST",
-    signal,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ imageBase64, mimeType: file.type || "image/jpeg" }),
-  });
+  let imageBase64;
+  try {
+    imageBase64 = await fileToBase64(file);
+  } catch (e) {
+    throw new Error(`Could not read file (${Math.round((file?.size || 0) / 1024)}KB): ${e instanceof Error ? e.message : e}`);
+  }
+  const sizeKB = Math.round((imageBase64.length * 0.75) / 1024);
+  let res;
+  try {
+    res = await fetch(`${API_BASE}/ocr/image`, {
+      method: "POST",
+      signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ imageBase64, mimeType: file.type || "image/jpeg" }),
+    });
+  } catch (e) {
+    // iOS Safari throws "Load failed" for network errors or oversized fetch bodies
+    throw new Error(`Upload failed (${sizeKB}KB image) — ${e instanceof Error ? e.message : e}`);
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw Object.assign(new Error(err.error || `Server error ${res.status}`), { status: res.status });
@@ -163,8 +176,8 @@ export default function ImageSearchTab({ onWinesReady, isLoading, batchId }) {
     if (status === 'review' && fileItems.length > 0) {
       try {
         sessionStorage.setItem(OCR_SESSION_KEY, JSON.stringify({
-          fileItems: fileItems.map(({ id, wines, error, status: s, expanded, file, name }) => ({
-            id, wines, error, status: s, expanded,
+          fileItems: fileItems.map(({ id, wines, error, status: s, expanded, file, name, _debug }) => ({
+            id, wines, error, status: s, expanded, _debug,
             name: (/** @type {any} */(file))?.name || name || null,
             url: null, // blob URLs expire; thumbnails won't show on restore
           })),
@@ -505,9 +518,12 @@ export default function ImageSearchTab({ onWinesReady, isLoading, batchId }) {
               className="w-full flex items-center gap-3 px-3 py-2 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-750 transition-colors text-left"
             >
               <img src={item.url} alt={item.file?.name ?? item.name ?? ''} className="w-8 h-8 object-cover rounded flex-shrink-0" />
-              <span className="flex-1 text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{item.file?.name ?? item.name ?? ''}</span>
+              <div className="flex-1 min-w-0">
+                <span className="block text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{item.file?.name ?? item.name ?? ''}</span>
+                {item._debug && <span className="block text-[9px] text-gray-400 dark:text-gray-500 truncate">{item._debug}</span>}
+              </div>
               {item.status === "error"
-                ? <span className="text-[11px] text-red-500 flex-shrink-0">{item.error?.slice(0, 40)}</span>
+                ? <span className="text-[11px] text-red-500 flex-shrink-0 text-right max-w-[120px] truncate" title={item.error}>{item.error?.slice(0, 40)}</span>
                 : <span className="text-[11px] text-gray-400 flex-shrink-0">{item.wines.length} wine{item.wines.length !== 1 ? "s" : ""}</span>
               }
               {item.expanded ? <ChevronUp className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />}
