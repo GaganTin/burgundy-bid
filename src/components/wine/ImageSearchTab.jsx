@@ -8,6 +8,26 @@ import { createPageUrl } from "@/utils";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
 
+// Safari on iOS passes camera photos as HEIC blobs, which <img> can't render via blob URLs.
+// Convert any non-web-safe format to JPEG using canvas so preview and OCR both work.
+const WEB_SAFE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
+async function normalizeImageFile(file) {
+  if (WEB_SAFE_TYPES.includes(file.type)) return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0);
+    const blob = await new Promise((res, rej) =>
+      canvas.toBlob(b => b ? res(b) : rej(new Error('toBlob failed')), 'image/jpeg', 0.92)
+    );
+    return new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
+  } catch {
+    return file;
+  }
+}
+
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -102,15 +122,17 @@ export default function ImageSearchTab({ onWinesReady, isLoading, batchId }) {
   const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
   // Merge new files into the list, capping at remaining credits
-  const addFiles = useCallback((incoming) => {
+  const addFiles = useCallback(async (incoming) => {
     const available = ocrUsage
       ? (ocrUsage.limit >= 99999 ? 150 : ocrUsage.remaining)
       : 0;
-    const valid = incoming.filter(f => f.type.startsWith("image/"));
+    const imageFiles = incoming.filter(f => f.type.startsWith("image/"));
+    // Normalize HEIC/HEIF → JPEG so preview renders and OCR accepts the file
+    const normalized = await Promise.all(imageFiles.map(normalizeImageFile));
     setFileItems(prev => {
       const slots = available - prev.length;
       if (slots <= 0) return prev;
-      const toAdd = valid.slice(0, slots).map(f => ({
+      const toAdd = normalized.slice(0, slots).map(f => ({
         id: makeId(),
         file: f,
         url: URL.createObjectURL(f),
@@ -147,7 +169,7 @@ export default function ImageSearchTab({ onWinesReady, isLoading, batchId }) {
 
   const resetAll = () => {
     if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
-    setFileItems(prev => { prev.forEach(i => URL.revokeObjectURL(i.url)); return []; });
+    setFileItems(prev => { prev.forEach(i => { if (i.url) URL.revokeObjectURL(i.url); }); return []; });
     setStatus("idle");
     if (fileRef.current) fileRef.current.value = "";
   };
@@ -417,8 +439,8 @@ export default function ImageSearchTab({ onWinesReady, isLoading, batchId }) {
               onClick={() => toggleExpand(item.id)}
               className="w-full flex items-center gap-3 px-3 py-2 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-750 transition-colors text-left"
             >
-              <img src={item.url} alt={item.file.name} className="w-8 h-8 object-cover rounded flex-shrink-0" />
-              <span className="flex-1 text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{item.file.name}</span>
+              <img src={item.url} alt={item.file?.name ?? item.name ?? ''} className="w-8 h-8 object-cover rounded flex-shrink-0" />
+              <span className="flex-1 text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{item.file?.name ?? item.name ?? ''}</span>
               {item.status === "error"
                 ? <span className="text-[11px] text-red-500 flex-shrink-0">{item.error?.slice(0, 40)}</span>
                 : <span className="text-[11px] text-gray-400 flex-shrink-0">{item.wines.length} wine{item.wines.length !== 1 ? "s" : ""}</span>
