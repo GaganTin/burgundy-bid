@@ -8,12 +8,20 @@ import { createPageUrl } from "@/utils";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
 
-// iOS camera produces HEIC files. Safari can decode HEIC from data: URLs (system decoder)
-// but NOT from blob: URLs, so createObjectURL on a HEIC file always shows "Load failed".
-// Fix: read as data URL → load into <img> (iOS decodes it) → draw to canvas → export JPEG.
-const WEB_SAFE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/bmp'];
+// iOS camera sets file.type="image/jpeg" and name="image.jpg" but the bytes are HEIC.
+// We cannot trust file.type. Instead: test-render via blob URL first — fast path for real
+// JPEGs. If that fails, fall back to data URL (iOS system decoder handles HEIC data URLs)
+// then convert to JPEG via canvas so both preview and OCR receive a valid JPEG.
 async function normalizeImageFile(file) {
-  if (WEB_SAFE_TYPES.includes(file.type)) return file;
+  const testUrl = URL.createObjectURL(file);
+  const canRender = await new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(testUrl); resolve(true); };
+    img.onerror = () => { URL.revokeObjectURL(testUrl); resolve(false); };
+    img.src = testUrl;
+  });
+  if (canRender) return file;
+
   try {
     const dataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader();
