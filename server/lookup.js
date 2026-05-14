@@ -888,21 +888,22 @@ function _isRealError(msg) {
 // ── Progressive name-trimming helpers ────────────────────────────────────────
 // Returns an ordered list of shorter wine name candidates to try when the
 // original full-name search returns "no wine found".
-// Rules (per user requirement):
-//  - Only applies when the name has MORE than 4 parts.
-//  - First pass: drop words from the FRONT, one at a time, stopping at 4 parts.
-//  - Second pass: drop words from the BACK (from original), one at a time, stopping at 4 parts.
-//  - If the name is 4 parts or fewer, returns an empty array (no fallback).
+// Rules:
+//  - Front-drop: drop words from the FRONT one at a time, stopping at 4 parts.
+//    (Keeps "Château"/"Domaine" prefix intact as long as possible.)
+//  - Back-drop: drop words from the BACK one at a time, stopping at 3 parts.
+//    (Suffixes like "Réserve du Château" may not appear in WS — need to go lower.)
+//  - If the name is 3 parts or fewer, returns an empty array (no fallback).
 function _wsFallbackNames(name) {
   const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length <= 4) return [];
+  if (parts.length <= 3) return [];
   const candidates = [];
-  // Front-drop pass
+  // Front-drop pass: stop at 4 parts
   for (let i = 1; i <= parts.length - 4; i++) {
     candidates.push(parts.slice(i).join(' '));
   }
-  // Back-drop pass (from original)
-  for (let i = 1; i <= parts.length - 4; i++) {
+  // Back-drop pass: stop at 3 parts
+  for (let i = 1; i <= parts.length - 3; i++) {
     candidates.push(parts.slice(0, parts.length - i).join(' '));
   }
   return candidates;
@@ -956,9 +957,9 @@ async function _ctLookupWithFallback(ctPage, name, vintage, size) {
   if (!_ctIsNotFound(r0)) return r0;
 
   const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length <= 4) return r0;
+  if (parts.length <= 3) return r0;
 
-  // Front-drop pass
+  // Front-drop pass: stop at 4 parts
   for (let i = 1; i <= parts.length - 4; i++) {
     await ctPage.waitForTimeout(300 + Math.random() * 600);
     const shorter = parts.slice(i).join(' ');
@@ -966,8 +967,8 @@ async function _ctLookupWithFallback(ctPage, name, vintage, size) {
     const r = await _doCtLookup(ctPage, shorter, vintage, size);
     if (!_ctIsNotFound(r)) return r;
   }
-  // Back-drop pass
-  for (let i = 1; i <= parts.length - 4; i++) {
+  // Back-drop pass: stop at 3 parts
+  for (let i = 1; i <= parts.length - 3; i++) {
     await ctPage.waitForTimeout(300 + Math.random() * 600);
     const shorter = parts.slice(0, parts.length - i).join(' ');
     console.log(`[CT fallback] "${name}" not found — retrying as "${shorter}"`);
