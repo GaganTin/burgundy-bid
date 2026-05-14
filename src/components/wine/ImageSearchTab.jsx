@@ -39,23 +39,27 @@ async function sniffMime(/** @type {File} */ file) {
   });
 }
 
+// MAX_UPLOAD_BYTES: keep source file under this so the base64 JSON body stays
+// well under nginx's default 1 MB client_max_body_size (800 KB → ~1.07 MB base64).
+const MAX_UPLOAD_BYTES = 800 * 1024;
+const MAX_DIM = 1600;
+const JPEG_QUALITY = 0.85;
+
 // Returns { file, origType, sniffedType, converted } for debug display.
-async function normalizeImageFile(file) {
+async function normalizeImageFile(/** @type {File} */ file) {
   const origType = file.type;
   const sniffedType = await sniffMime(file);
 
-  // Fast path: blob URL renders directly (real JPEG/PNG/WebP from photo library)
-  const testUrl = URL.createObjectURL(file);
-  const canRender = await new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => { URL.revokeObjectURL(testUrl); resolve(true); };
-    img.onerror = () => { URL.revokeObjectURL(testUrl); resolve(false); };
-    img.src = testUrl;
-  });
-  if (canRender) return { file, origType, sniffedType, converted: false };
+  const WEB_SAFE = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
-  // Blob URL failed. Use sniffed MIME type (not file.type) in the data URL so
-  // iOS system decoder gets the correct format hint and can decode the HEIC bytes.
+  // Fast path: confirmed web-safe AND small enough to upload unchanged
+  if (WEB_SAFE.includes(sniffedType) && file.size <= MAX_UPLOAD_BYTES) {
+    return { file, origType, sniffedType, converted: false };
+  }
+
+  // Either format isn't web-safe (HEIC) OR file is too large (full-res camera JPEG).
+  // Load via data URL using the sniffed MIME so iOS decodes HEIC correctly,
+  // then resize + re-encode as JPEG to keep the upload body small.
   try {
     const rawBase64 = await new Promise((resolve, reject) => {
       const fr = new FileReader();
@@ -63,16 +67,12 @@ async function normalizeImageFile(file) {
       fr.onerror = reject;
       fr.readAsDataURL(file);
     });
-    const dataUrl = `data:${sniffedType};base64,${rawBase64}`;
     const img = await new Promise((resolve, reject) => {
       const i = new Image();
       i.onload = () => resolve(i);
       i.onerror = reject;
-      i.src = dataUrl;
+      i.src = `data:${sniffedType};base64,${rawBase64}`;
     });
-    // Keep output under ~1.5MB so iOS Safari doesn't abort the OCR fetch body.
-    // Library photos are auto-resized by iOS; camera captures are full-res (12MP+).
-    const MAX_DIM = 2048;
     let w = img.naturalWidth, h = img.naturalHeight;
     if (w > MAX_DIM || h > MAX_DIM) {
       const s = MAX_DIM / Math.max(w, h);
@@ -82,7 +82,7 @@ async function normalizeImageFile(file) {
     canvas.width = w; canvas.height = h;
     canvas.getContext('2d').drawImage(img, 0, 0, w, h);
     const blob = await new Promise((res, rej) =>
-      canvas.toBlob(b => b ? res(b) : rej(new Error('toBlob failed')), 'image/jpeg', 0.92)
+      canvas.toBlob(b => b ? res(b) : rej(new Error('toBlob failed')), 'image/jpeg', JPEG_QUALITY)
     );
     const converted = new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), { type: 'image/jpeg' });
     return { file: converted, origType, sniffedType, converted: true };
