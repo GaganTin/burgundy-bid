@@ -446,3 +446,22 @@ CREATE TABLE IF NOT EXISTS referral_tickets (
 
 CREATE INDEX IF NOT EXISTS referral_tickets_user_status_idx ON referral_tickets(user_id, status);
 CREATE INDEX IF NOT EXISTS referral_tickets_expires_idx     ON referral_tickets(expires_at);
+
+-- subscription_id was UUID but Stripe IDs (sub_xxx) are plain strings
+DO $$ BEGIN
+  IF (SELECT data_type FROM information_schema.columns
+      WHERE table_name='users' AND column_name='subscription_id') = 'uuid' THEN
+    ALTER TABLE users ALTER COLUMN subscription_id TYPE TEXT USING subscription_id::TEXT;
+  END IF;
+END $$;
+
+-- unique constraint required by ON CONFLICT (transaction_id) DO NOTHING
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+    WHERE constraint_name = 'users_payments_transaction_id_key'
+    AND table_name = 'users_payments'
+  ) THEN
+    ALTER TABLE users_payments ADD CONSTRAINT users_payments_transaction_id_key UNIQUE (transaction_id);
+  END IF;
+END $$;
