@@ -143,6 +143,10 @@ import { syncProxies, assignProxyToUser, getPlaywrightProxy, encryptCookies, log
 import { runLookupForBatch } from './lookup.js';
 import Queue from 'bull';
 const JWT_SECRET = process.env.JWT_SECRET || 'devsecret_replace_me';
+if (!process.env.JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') { console.error('[SECURITY] JWT_SECRET is not set in production — aborting'); process.exit(1); }
+  else console.warn('[SECURITY] JWT_SECRET not set — using insecure default (dev only)');
+}
 const JWT_EXPIRES = process.env.JWT_EXPIRES || '1h';
 const REFRESH_TOKEN_EXPIRES_DAYS = 30;
 
@@ -214,7 +218,11 @@ async function logActivity(userId, activityType, details = {}, req = null) {
 }
 
 // Encryption for storing connection passwords
-const ENC_KEY = process.env.CONN_ENC_KEY || 'dev_change_this_to_a_32_byte_key!!'; // passphrase; will be hashed to 32 bytes
+const ENC_KEY = process.env.CONN_ENC_KEY || 'dev_change_this_to_a_32_byte_key!!';
+if (!process.env.CONN_ENC_KEY) {
+  if (process.env.NODE_ENV === 'production') { console.error('[SECURITY] CONN_ENC_KEY is not set in production — aborting'); process.exit(1); }
+  else console.warn('[SECURITY] CONN_ENC_KEY not set — connection passwords use insecure default (dev only)');
+}
 const ENC_KEY_BUF = crypto.createHash('sha256').update(String(ENC_KEY)).digest();
 const IV_LEN = 12; // 12 bytes for GCM recommended
 function encryptText(plain) {
@@ -3058,8 +3066,20 @@ app.get('/connect/:id/stream', authMiddleware, async (req, res) => {
 });
 
 // SSE stream for lookup batch logs
-app.get('/lookup/:id/stream', authMiddleware, (req, res) => {
+app.get('/lookup/:id/stream', authMiddleware, async (req, res) => {
   const { id } = req.params;
+  try {
+    const check = await pool.query(
+      'SELECT COUNT(*) FROM wine_lookups WHERE batch_id=$1 AND user_id=$2 AND is_deleted=false',
+      [id, req.user.id]
+    );
+    if (parseInt(check.rows[0].count, 10) === 0 && req.user.role_type !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+  } catch (err) {
+    console.error('lookup stream auth check error', err);
+    return res.status(500).json({ error: String(err) });
+  }
   // set headers for SSE
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -3171,6 +3191,22 @@ app.post('/lookup/:id/run', authMiddleware, async (req, res) => {
   const batchId = req.params.id;
   const userId = req.user.id;
   const currency = ((req.query.currency || '') || 'USD').replace(/[^A-Za-z]/g, '').toUpperCase() || 'USD';
+
+  // Verify the batch belongs to the authenticated user
+  if (req.user.role_type !== 'admin') {
+    try {
+      const ownerCheck = await pool.query(
+        'SELECT COUNT(*) FROM wine_lookups WHERE batch_id=$1 AND user_id=$2 AND is_deleted=false',
+        [batchId, userId]
+      );
+      if (parseInt(ownerCheck.rows[0].count, 10) === 0) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    } catch (err) {
+      console.error('lookup run ownership check error', err);
+      return res.status(500).json({ error: String(err) });
+    }
+  }
 
   // If this batch is already running, return immediately
   if (_lookupRunning.has(batchId)) {
@@ -3366,7 +3402,7 @@ app.delete('/entities/:entity/:id', async (req, res) => {
       if (check.rowCount === 0) return res.status(404).json({ error: 'Not found' });
       const owner    = check.rows[0].user_id;
       const siteName = check.rows[0].site_name;
-      if (user.role_type !== 'admin' && owner !== user.id) return res.status(403).json({ error: 'Forbidden' });
+      if (user.role_type !== 'admin' && String(owner) !== String(user.id)) return res.status(403).json({ error: 'Forbidden' });
       await pool.query('DELETE FROM users_connections WHERE id=$1', [id]);
       await pool.query('DELETE FROM users_sessions    WHERE user_id=$1 AND site=$2', [owner, siteName]);
       // For Wine-Searcher, also delete the per-user Playwright browser profile directory.
@@ -3976,7 +4012,7 @@ app.post('/auth/send-verification', authLimiter, async (req, res) => {
     }
     if (!email) return res.status(400).json({ error: 'email required' });
     const r = await pool.query('SELECT id, full_name, is_email_verified FROM users WHERE email=$1', [email]);
-    if (r.rowCount === 0) return res.status(404).json({ error: 'User not found' });
+    if (r.rowCount === 0) return res.json({ success: true }); // don't reveal whether the email exists
     if (r.rows[0].is_email_verified) return res.json({ success: true, already_verified: true });
     const code = crypto.randomBytes(3).toString('hex').toUpperCase(); // 6-char hex code
     const expires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
@@ -5586,9 +5622,9 @@ app.post('/admin/maintenance/run/:job', authMiddleware, adminMiddleware, async (
 app.get('/health', async (_req, res) => {
   try {
     await pool.query('SELECT 1');
-    res.json({ status: 'ok', db: dbHost });
+    res.json({ status: 'ok' });
   } catch (e) {
-    res.status(503).json({ status: 'error', db: dbHost, error: e.message });
+    res.status(503).json({ status: 'error' });
   }
 });
 
