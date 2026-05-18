@@ -2632,20 +2632,12 @@ app.get('/entities/:entity', async (req, res) => {
       r.rows.forEach(row => { row.password = null; });
       return res.json(r.rows);
     } else if (entity === 'SiteCredential') {
-      // Return credentials for the logged-in user from users_connections
-      const params = [];
-      let sql = 'SELECT * FROM users_connections';
-      if (user.role_type !== 'admin') {
-        sql += ' WHERE user_id = $1';
-        params.push(user.id);
-      } else if (q.user_id) {
-        sql += ' WHERE user_id = $1';
-        params.push(q.user_id);
-      }
-      const r = await pool.query(sql, params);
+      // Always scope to the authenticated user — cross-user access is admin-only
+      // and must go through dedicated /admin/ routes, not this generic endpoint.
+      const r = await pool.query('SELECT * FROM users_connections WHERE user_id = $1', [user.id]);
       // strip passwords — never expose to client
       r.rows.forEach(row => { row.password = null; });
-      return res.json(r.rows); 
+      return res.json(r.rows);
     }
     res.status(404).json({ error: 'Unknown entity' });
   } catch (err) {
