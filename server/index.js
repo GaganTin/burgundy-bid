@@ -2579,21 +2579,9 @@ app.use('/batches', parseTokenOptional, dataScrapeLimit);
 app.get('/_health', async (_req, res) => {
   try {
     await pool.query('SELECT 1');
-    let jobHealth = null;
-    try {
-      const jobsR = await pool.query(`
-        SELECT job_name, last_status, last_run_at, next_run_at, last_error
-        FROM maintenance_jobs
-        ORDER BY job_name
-      `);
-      const failedJobs = jobsR.rows.filter(j => j.last_status === 'error');
-      jobHealth = { total: jobsR.rowCount, failed: failedJobs.length, jobs: jobsR.rows };
-    } catch (_) {
-      jobHealth = { error: 'maintenance_jobs table not yet created' };
-    }
-    return res.json({ ok: true, db: 'connected', maintenance: jobHealth });
+    return res.json({ ok: true, db: 'connected' });
   } catch (e) {
-    return res.status(503).json({ ok: false, db: 'error', error: e.message });
+    return res.status(503).json({ ok: false, db: 'error' });
   }
 });
 
@@ -3021,6 +3009,11 @@ app.post('/connect/:id', authMiddleware, async (req, res) => {
 app.get('/connect/:id/logs', authMiddleware, async (req, res) => {
   const { id } = req.params;
   try {
+    const check = await pool.query('SELECT user_id FROM users_connections WHERE id=$1', [id]);
+    if (check.rowCount === 0) return res.status(404).json({ error: 'Not found' });
+    if (String(check.rows[0].user_id) !== String(req.user.id) && req.user.role_type !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const logs = jobLogs.get(id) || [];
     return res.json(logs);
   } catch (err) {
@@ -3030,8 +3023,18 @@ app.get('/connect/:id/logs', authMiddleware, async (req, res) => {
 });
 
 // SSE stream logs for a connection job
-app.get('/connect/:id/stream', authMiddleware, (req, res) => {
+app.get('/connect/:id/stream', authMiddleware, async (req, res) => {
   const { id } = req.params;
+  try {
+    const check = await pool.query('SELECT user_id FROM users_connections WHERE id=$1', [id]);
+    if (check.rowCount === 0) return res.status(404).json({ error: 'Not found' });
+    if (String(check.rows[0].user_id) !== String(req.user.id) && req.user.role_type !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+  } catch (err) {
+    console.error('stream auth check error', err);
+    return res.status(500).json({ error: String(err) });
+  }
   // set headers for SSE
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -3738,7 +3741,7 @@ app.put('/auth/me', authMiddleware, async (req, res) => {
   try {
     const email = req.user.email;
     const fields = req.body || {};
-    const allowed = ['full_name','phone','preferred_theme','subscription_plan','subscription_price','subscription_started','subscription_ended','is_email_verified'];
+    const allowed = ['full_name','phone','preferred_theme'];
     const updates = [];
     const vals = [];
     Object.entries(fields).forEach(([k,v]) => {
@@ -3887,7 +3890,8 @@ app.post('/auth/forgot-password', authLimiter, async (req, res) => {
   const { email } = parse.data;
   try {
     const r = await pool.query('SELECT id, full_name FROM users WHERE email=$1 AND is_deleted IS NOT TRUE', [email]);
-    if (r.rowCount === 0) return res.status(404).json({ error: 'No account found with that email address. Please check and try again.' });
+    // Always return 200 regardless of whether the email exists to prevent account enumeration
+    if (r.rowCount === 0) return res.json({ success: true });
     const user = r.rows[0];
     const token = crypto.randomBytes(32).toString('hex');
     const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
@@ -3923,7 +3927,7 @@ app.post('/auth/forgot-password', authLimiter, async (req, res) => {
 });
 
 // Reset password — validates token, sets new password
-app.post('/auth/reset-password', async (req, res) => {
+app.post('/auth/reset-password', authLimiter, async (req, res) => {
   const { token, password } = req.body || {};
   if (!token || !password) return res.status(400).json({ error: 'token and password required' });
   const pwErr = validatePasswordStrength(password);
@@ -3959,7 +3963,7 @@ app.post('/auth/reset-password', async (req, res) => {
 });
 
 // Send email verification code (auth-required)
-app.post('/auth/send-verification', async (req, res) => {
+app.post('/auth/send-verification', authLimiter, async (req, res) => {
   try {
     // Accept email from body (pre-auth signup flow) or from JWT if already authenticated
     let email = req.body?.email;
@@ -4057,9 +4061,11 @@ app.get('/public/entities/:entity', async (req, res) => {
     if (entity === 'WineLookup') {
       const { batch_id, limit = 200 } = q;
       if (!batch_id) return res.json([]);
+      // Restrict to demo batches only — real user batch IDs must not be accessible without auth
+      if (!batch_id.includes('_demo_')) return res.json([]);
       const includeDeleted = q.include_deleted === 'true' || q.include_deleted === '1';
       const deletedClause = includeDeleted ? '' : 'AND is_deleted = false';
-      const sql = `SELECT * FROM wine_lookups WHERE batch_id=$1 ${deletedClause} ORDER BY created_date DESC LIMIT $2`;
+      const sql = `SELECT * FROM wine_lookups WHERE batch_id=$1 AND batch_id LIKE '%_demo_%' ${deletedClause} ORDER BY created_date DESC LIMIT $2`;
       const r = await pool.query(sql, [batch_id, Number(limit)]);
       return res.json(r.rows);
     }
@@ -5454,7 +5460,7 @@ app.get('/admin/ocr/usage', authMiddleware, adminMiddleware, async (req, res) =>
   try {
     const rangeMap = { '7': 7, '30': 30, '90': 90, '365': 365, all: null };
     const days = rangeMap[req.query.range] ?? 30;
-    const since = days ? `NOW() - INTERVAL '${days} days'` : `'epoch'`;
+    const sinceDate = days ? new Date(Date.now() - days * 24 * 60 * 60 * 1000) : new Date(0);
 
     const [summary, byUser, byDay] = await Promise.all([
       pool.query(`
@@ -5472,8 +5478,8 @@ app.get('/admin/ocr/usage', authMiddleware, adminMiddleware, async (req, res) =>
             (parse_output_tokens / 1000000.0) * 0.30
           ), 0)                                           AS estimated_cost_usd
         FROM ocr_requests
-        WHERE created_date > ${since}
-      `),
+        WHERE created_date > $1
+      `, [sinceDate]),
       pool.query(`
         SELECT
           u.email,
@@ -5487,11 +5493,11 @@ app.get('/admin/ocr/usage', authMiddleware, adminMiddleware, async (req, res) =>
           ), 0)                                              AS estimated_cost_usd
         FROM ocr_requests r
         LEFT JOIN users u ON u.id = r.user_id
-        WHERE r.created_date > ${since}
+        WHERE r.created_date > $1
         GROUP BY u.email
         ORDER BY estimated_cost_usd DESC
         LIMIT 50
-      `),
+      `, [sinceDate]),
       pool.query(`
         SELECT
           date_trunc('day', created_date)::date AS day,
@@ -5503,10 +5509,10 @@ app.get('/admin/ocr/usage', authMiddleware, adminMiddleware, async (req, res) =>
             (parse_output_tokens / 1000000.0) * 0.30
           ), 0)                                  AS estimated_cost_usd
         FROM ocr_requests
-        WHERE created_date > ${since}
+        WHERE created_date > $1
         GROUP BY day
         ORDER BY day DESC
-      `),
+      `, [sinceDate]),
     ]);
 
     res.json({
