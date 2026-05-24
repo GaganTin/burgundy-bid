@@ -201,13 +201,17 @@ export default function Lookup() {
       byBatch[w.batch_id].wines.push(w);
     });
 
+    const sortWines = wines => [...wines].sort((a, b) =>
+      (a.row_order ?? Infinity) - (b.row_order ?? Infinity) || new Date(a.created_date) - new Date(b.created_date)
+    );
+
     const current = currentId && byBatch[currentId]
-      ? { ...byBatch[currentId], wines: byBatch[currentId].wines.sort((a, b) => new Date(b.created_date) - new Date(a.created_date)) }
+      ? { ...byBatch[currentId], wines: sortWines(byBatch[currentId].wines) }
       : null;
 
     const history = historyIds
       .filter(id => byBatch[id])
-      .map(id => ({ ...byBatch[id], wines: byBatch[id].wines.sort((a, b) => new Date(b.created_date) - new Date(a.created_date)) }));
+      .map(id => ({ ...byBatch[id], wines: sortWines(byBatch[id].wines) }));
 
     return { current, history };
   }

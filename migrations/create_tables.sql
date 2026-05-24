@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS wine_lookups (
   ct_error     TEXT,
   ws_error     TEXT,
   batch_id     TEXT,
+  row_order    INTEGER,
   status       TEXT        DEFAULT 'pending',
   lookup_source TEXT       DEFAULT 'server',
   lookup_type  TEXT,                            -- 'single' | 'paste' | 'file' | 'image'
@@ -452,6 +453,16 @@ DO $$ BEGIN
   IF (SELECT data_type FROM information_schema.columns
       WHERE table_name='users' AND column_name='subscription_id') = 'uuid' THEN
     ALTER TABLE users ALTER COLUMN subscription_id TYPE TEXT USING subscription_id::TEXT;
+  END IF;
+END $$;
+
+-- row_order preserves original input order for paste/file/image batches
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='wine_lookups' AND column_name='row_order'
+  ) THEN
+    ALTER TABLE wine_lookups ADD COLUMN row_order INTEGER;
   END IF;
 END $$;
 

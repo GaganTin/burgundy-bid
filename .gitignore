@@ -19,6 +19,9 @@ server/lookup_diagnostics/
 server/server/
 server/tests/
 
+# Reference implementation — local copy only
+# cellartracker-lookup-main/
+
 # Large binary assets — download separately on each machine
 eng.traineddata
 

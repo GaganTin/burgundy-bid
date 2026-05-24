@@ -2621,7 +2621,10 @@ app.get('/entities/:entity', async (req, res) => {
       }
       let sql = 'SELECT * FROM wine_lookups';
       if (clauses.length) sql += ' WHERE ' + clauses.join(' AND ');
-      sql += ' ORDER BY created_date DESC LIMIT $' + (params.length + 1);
+      sql += batch_id
+        ? ' ORDER BY row_order ASC NULLS LAST, created_date ASC'
+        : ' ORDER BY created_date DESC';
+      sql += ' LIMIT $' + (params.length + 1);
       params.push(Number(limit));
       const r = await pool.query(sql, params);
       // strip passwords — never expose to client
@@ -2653,8 +2656,8 @@ app.post('/entities/:entity', async (req, res) => {
       if (data.ct_currency) data.ct_currency = data.ct_currency.replace(/[^A-Za-z]/g, '').toUpperCase() || 'USD';
       else if (!data.ct_currency) data.ct_currency = inferCurrencyFromPrice(data.ct_avg || data.ct_auction);
       const lookupType = batchIdToLookupType(data.batch_id);
-      const cols = ['user_id','wine_name','vintage','size','ct_avg','ct_auction','ws_avg','ws_min','ct_url','ws_url','offer_price','matched_as','batch_id','status','ws_currency','ct_currency','lookup_type'];
-      const vals = cols.map(c => c === 'lookup_type' ? lookupType : c === 'status' ? (data[c] ?? 'pending') : (data[c] ?? null));
+      const cols = ['user_id','wine_name','vintage','size','ct_avg','ct_auction','ws_avg','ws_min','ct_url','ws_url','offer_price','matched_as','batch_id','row_order','status','ws_currency','ct_currency','lookup_type'];
+      const vals = cols.map(c => c === 'lookup_type' ? lookupType : c === 'row_order' ? 0 : c === 'status' ? (data[c] ?? 'pending') : (data[c] ?? null));
       const placeholders = vals.map((_, i) => `$${i+1}`).join(',');
       const sql = `INSERT INTO wine_lookups(${cols.join(',')}) VALUES(${placeholders}) RETURNING *`;
       const r = await pool.query(sql, vals);
@@ -2756,15 +2759,15 @@ app.post('/entities/:entity/bulk', async (req, res) => {
       }
       const results = [];
       const batchLookupType = batchIdToLookupType(records[0]?.batch_id);
-      for (const rec of records) {
-        const data = { ...rec };
+      for (let rowIdx = 0; rowIdx < records.length; rowIdx++) {
+        const data = { ...records[rowIdx] };
         if (!data.user_id || user.role_type !== 'admin') data.user_id = user.id;
         // Sanitize ws_currency and ct_currency if provided
         if (data.ws_currency) data.ws_currency = data.ws_currency.replace(/[^A-Za-z]/g, '').toUpperCase() || 'USD';
         if (data.ct_currency) data.ct_currency = data.ct_currency.replace(/[^A-Za-z]/g, '').toUpperCase() || 'USD';
         else if (!data.ct_currency) data.ct_currency = inferCurrencyFromPrice(data.ct_avg || data.ct_auction);
-        const cols = ['user_id','wine_name','vintage','size','ct_avg','ct_auction','ws_avg','ws_min','ct_url','ws_url','offer_price','matched_as','batch_id','status','ws_currency','ct_currency','lookup_type'];
-        const vals = cols.map(c => c === 'lookup_type' ? batchLookupType : c === 'status' ? (data[c] ?? 'pending') : (data[c] ?? null));
+        const cols = ['user_id','wine_name','vintage','size','ct_avg','ct_auction','ws_avg','ws_min','ct_url','ws_url','offer_price','matched_as','batch_id','row_order','status','ws_currency','ct_currency','lookup_type'];
+        const vals = cols.map(c => c === 'lookup_type' ? batchLookupType : c === 'row_order' ? rowIdx : c === 'status' ? (data[c] ?? 'pending') : (data[c] ?? null));
         const placeholders = vals.map((_, i) => `$${i+1}`).join(',');
         const sql = `INSERT INTO wine_lookups(${cols.join(',')}) VALUES(${placeholders}) RETURNING *`;
         const r = await pool.query(sql, vals);
@@ -3176,6 +3179,10 @@ app.get('/batches/history', async (req, res) => {
       groups[row.batch_id].wines.push(row);
       // keep latest date for the group
       if (new Date(row.created_date) > new Date(groups[row.batch_id].date)) groups[row.batch_id].date = row.created_date;
+    }
+    // sort wines within each batch by original input order
+    for (const g of Object.values(groups)) {
+      g.wines.sort((a, b) => (a.row_order ?? Infinity) - (b.row_order ?? Infinity) || new Date(a.created_date) - new Date(b.created_date));
     }
     // convert to sorted array by date desc
     const arr = Object.values(groups).sort((a, b) => new Date(b.date) - new Date(a.date));

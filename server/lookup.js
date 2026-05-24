@@ -385,6 +385,13 @@ function _extractPrice(text) {
   return m2 ? m2[1] : null;
 }
 
+function _roundPrice(priceStr) {
+  if (!priceStr) return priceStr;
+  const m = priceStr.match(/^([$€£])\s*([\d,]+(?:\.\d+)?)/);
+  if (!m) return priceStr;
+  return m[1] + Math.round(parseFloat(m[2].replace(/,/g, ''))).toLocaleString('en-US');
+}
+
 // Bottle-size rules shared by _extractCtSize, _normalizeBottleSize, _sizeToMl
 const _CT_SIZE_RULES = [
   [/double\s*magnum|3\s*l\b|3[\s,.]0+\s*l|3000\s*ml/i, '3l'],
@@ -651,6 +658,8 @@ async function ct_get_wine_data(page, wine_url, size = '') {
       const isPaywall = /Show\s+Value|Show\s+Auction\s+Value/i.test(text);
       result.ct_error = isPaywall ? 'not paid account' : 'Cellar Tracker: could not parse pricing';
     }
+    if (result.ct_avg)     result.ct_avg     = _roundPrice(result.ct_avg);
+    if (result.ct_auction) result.ct_auction = _roundPrice(result.ct_auction);
   } catch (err) {
     result.ct_error = `Cellar Tracker: page load error – ${err}`;
   }
@@ -766,16 +775,86 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
       }
     }
 
-    // Strategy 4: raw HTML fallback (catches server-rendered fragments)
+    // Strategy 4: HTML class-based (server-rendered fragments)
+    // Matches any element whose class attribute contains "average" or "avg-/avg_price"
+    if (!avg_price) {
+      const reClass = /class="[^"]*(?:average|avg.?price)[^"]*"[^>]*>([\s\S]{0,200}?)<\//gi;
+      let cm;
+      while ((cm = reClass.exec(html)) !== null) {
+        const p = _extractPrice(cm[1].replace(/<[^>]+>/g, ' ').trim());
+        if (p) { avg_price = p; break; }
+      }
+    }
+
+    // Strategy 5: raw HTML regex as last resort
     if (!avg_price) {
       const mm = html.match(/(?:average|avg\s+price)[^<]{0,60}?\$([\d,]+(?:\.\d+)?)/i);
       if (mm) avg_price = '$' + mm[1];
     }
 
-    if (avg_price) {
-      result.ws_avg = avg_price;
-      result.ws_wine_url = actual_url;
+    // ── Minimum price from merchant list (independent of avg_price) ──────────
+    // Find start of merchant section using the most reliable anchors.
+    const setAlertM = text.match(/\bSet\s+alert\b/i);
+    const statsFromM = text.match(/\bFrom\b\s*\$\s*([\d,]+(?:\.\d+)?)(?!\s*\/month)(?!\s*per\s+month)/);
+    const avgAnchorIdx = text.search(/[Aa]v(?:erage|g)\s+[Pp]rice/);
 
+    let merchStart;
+    if (setAlertM) {
+      merchStart = setAlertM.index + setAlertM[0].length;
+    } else if (statsFromM) {
+      merchStart = statsFromM.index + statsFromM[0].length;
+    } else if (avgAnchorIdx >= 0) {
+      merchStart = avgAnchorIdx + 600;
+    } else {
+      merchStart = 1500;
+    }
+
+    let merchText = text.slice(merchStart);
+
+    // Trim at end-of-listings markers to exclude sidebars / related products.
+    const endM = merchText.match(/Not what you.{0,10}re looking for|\bAlso from\b.{1,60}Learn more|Check with the merchant for stock/i);
+    if (endM) merchText = merchText.slice(0, endM.index);
+
+    const merchLines = merchText.split(/\r?\n/);
+    const amounts = [];
+
+    for (let i = 0; i < merchLines.length; i++) {
+      const stripped = merchLines[i].trim();
+      if (!stripped) continue;
+
+      // Accept standalone "$X" price line OR price at the very end of a line
+      let mPrice = stripped.match(/^\$\s*([\d,]+(?:\.\d+)?)\s*$/);
+      if (!mPrice) {
+        mPrice = stripped.match(/\$\s*([\d,]+(?:\.\d+)?)\s*$/);
+        // Skip summary/header lines that happen to contain a price
+        if (mPrice && /(?:from|average|avg|range|price|~|approx|about|over|above|orders)\b/i.test(stripped.slice(0, stripped.lastIndexOf('$')))) {
+          mPrice = null;
+        }
+      }
+      if (!mPrice) continue;
+
+      if (exclude_auctions) {
+        const ctx = merchLines.slice(Math.max(0, i - 5), i + 5).join('\n');
+        if (AUCTION_KW.test(ctx)) continue;
+      }
+      try { amounts.push(parseFloat(mPrice[1].replace(/,/g, ''))); } catch (e) {}
+    }
+
+    let ws_min = null;
+    if (amounts.length) {
+      ws_min = '$' + Math.round(Math.min(...amounts)).toLocaleString('en-US');
+    } else if (statsFromM) {
+      ws_min = _roundPrice('$' + statsFromM[1]);
+    } else {
+      const mm = html.match(/from[^<]{0,20}\$([\d,]+(?:\.\d+)?)/i);
+      if (mm) ws_min = _roundPrice('$' + mm[1]);
+    }
+
+    if (avg_price) result.ws_avg = _roundPrice(avg_price);
+    if (ws_min)    result.ws_min = ws_min;
+
+    if (avg_price || ws_min) {
+      result.ws_wine_url = actual_url;
       // Wine name from <h1> or first meaningful line of rendered text
       const h1 = await page.$('h1');
       if (h1) {
@@ -785,65 +864,6 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
           const l = line.trim();
           if (l && l.length > 5 && !l.includes('$')) { result.ws_matched = l; break; }
         }
-      }
-
-      // ── Minimum price from merchant list ─────────────────────────────────
-      // Find start of merchant section using the most reliable anchors.
-      const setAlertM = text.match(/\bSet\s+alert\b/i);
-      const statsFromM = text.match(/\bFrom\b\s*\$\s*([\d,]+(?:\.\d+)?)(?!\s*\/month)(?!\s*per\s+month)/);
-      const avgAnchorIdx = text.search(/[Aa]v(?:erage|g)\s+[Pp]rice/);
-
-      let merchStart;
-      if (setAlertM) {
-        merchStart = setAlertM.index + setAlertM[0].length;
-      } else if (statsFromM) {
-        merchStart = statsFromM.index + statsFromM[0].length;
-      } else if (avgAnchorIdx >= 0) {
-        merchStart = avgAnchorIdx + 600;
-      } else {
-        merchStart = 1500;
-      }
-
-      let merchText = text.slice(merchStart);
-
-      // Trim at end-of-listings markers to exclude sidebars / related products.
-      const endM = merchText.match(/Not what you.{0,10}re looking for|\bAlso from\b.{1,60}Learn more|Check with the merchant for stock/i);
-      if (endM) merchText = merchText.slice(0, endM.index);
-
-      const merchLines = merchText.split(/\r?\n/);
-      const amounts = [];
-
-      for (let i = 0; i < merchLines.length; i++) {
-        const stripped = merchLines[i].trim();
-        if (!stripped) continue;
-
-        // Accept standalone "$X" price line OR price at the very end of a line
-        let mPrice = stripped.match(/^\$\s*([\d,]+(?:\.\d+)?)\s*$/);
-        if (!mPrice) {
-          mPrice = stripped.match(/\$\s*([\d,]+(?:\.\d+)?)\s*$/);
-          // Skip summary/header lines that happen to contain a price
-          if (mPrice && /(?:from|average|avg|range|price|~|approx|about|over|above|orders)\b/i.test(stripped.slice(0, stripped.lastIndexOf('$')))) {
-            mPrice = null;
-          }
-        }
-        if (!mPrice) continue;
-
-        if (exclude_auctions) {
-          const ctx = merchLines.slice(Math.max(0, i - 5), i + 5).join('\n');
-          if (AUCTION_KW.test(ctx)) continue;
-        }
-        try { amounts.push(parseFloat(mPrice[1].replace(/,/g, ''))); } catch (e) {}
-      }
-
-      if (amounts.length) {
-        result.ws_min = '$' + Math.round(Math.min(...amounts)).toLocaleString();
-      } else if (statsFromM) {
-        // Fallback: "From $X" from the stats block
-        result.ws_min = '$' + statsFromM[1];
-      } else {
-        // Last resort: raw HTML "from $X"
-        const mm = html.match(/from[^<]{0,20}\$([\d,]+(?:\.\d+)?)/i);
-        if (mm) result.ws_min = '$' + mm[1];
       }
     } else {
       result.ws_error = 'Wine-Searcher: could not find average price';
@@ -1110,7 +1130,7 @@ async function runLookupForBatch(batchId, logger = () => {}, options = {}) {
     await _acquireSem(); _semAcquired = true;
 
     const r = await pool.query(
-      'SELECT * FROM wine_lookups WHERE batch_id=$1 AND (is_deleted IS NULL OR is_deleted=false) ORDER BY created_date ASC',
+      'SELECT * FROM wine_lookups WHERE batch_id=$1 AND (is_deleted IS NULL OR is_deleted=false) ORDER BY row_order ASC NULLS LAST, created_date ASC',
       [batchId]
     );
     if (r.rowCount === 0) {
