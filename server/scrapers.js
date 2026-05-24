@@ -838,6 +838,7 @@ async function _wsLoginAttempt(username, password, profileDir, proxyConfig = nul
     if (WS_AUTH_SIGNALS.some(k => (postHtml + ' ' + postInner).includes(k))) {
       const displayName = await _extractWsDisplayName(page);
       const email = await _extractWsEmail(page);
+      await _wsSetWorldwide(page);
       const cookies = await _extractCookies(context, 'wine-searcher');
       await safeClose();
       return { success: true, cookies, displayName, email };
@@ -860,6 +861,7 @@ async function _wsLoginAttempt(username, password, profileDir, proxyConfig = nul
     if (!onLoginPage && !hasError) {
       const displayName = await _extractWsDisplayName(page);
       const email = await _extractWsEmail(page);
+      await _wsSetWorldwide(page);
       const cookies = await _extractCookies(context, 'wine-searcher');
       await safeClose();
       return { success: true, cookies, displayName, email };
@@ -871,6 +873,45 @@ async function _wsLoginAttempt(username, password, profileDir, proxyConfig = nul
   } catch (err) {
     try { if (context) await context.close(); } catch (e) {}
     return { success: false, error: `Browser error – ${String(err)}` };
+  }
+}
+
+// Navigates to a WS search page and sets the location to Worldwide via the
+// location modal. Called after successful login so the saved session cookie
+// carries a worldwide preference before it is persisted to the DB.
+async function _wsSetWorldwide(page) {
+  try {
+    const WS_BASE = 'https://www.wine-searcher.com';
+    await page.goto(`${WS_BASE}/find/-/any/-/-/ndbipe?Xtax_mode=e&shoptype=1%2C0`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(2000);
+
+    const addressText = await page.locator('.location-selected-container .address').first()
+      .textContent({ timeout: 4000 }).catch(() => null);
+
+    if (!addressText || addressText.trim().toLowerCase() === 'worldwide') {
+      console.log('[WS] Login: location is already Worldwide');
+      return;
+    }
+
+    console.log(`[WS] Login: location is "${addressText.trim()}" — setting to Worldwide...`);
+
+    await page.locator('.change-location.js-location').first().click({ timeout: 5000 });
+    await page.waitForTimeout(1000);
+
+    const wwBtn = page.locator('.google-map__worldwide-button').first();
+    await wwBtn.waitFor({ state: 'visible', timeout: 5000 });
+    const isActive = await wwBtn.evaluate(el => el.classList.contains('active')).catch(() => false);
+    if (!isActive) {
+      await page.locator('.js-toggle-worldwide').first().click({ timeout: 5000 });
+      await page.waitForTimeout(500);
+    }
+
+    await page.locator('.js-save-location').first().click({ timeout: 5000 });
+    try { await page.waitForLoadState('domcontentloaded', { timeout: 15000 }); } catch (e) {}
+    await page.waitForTimeout(2000);
+    console.log('[WS] Login: location set to Worldwide successfully');
+  } catch (e) {
+    console.log(`[WS] Login: could not set worldwide location — ${e.message}`);
   }
 }
 

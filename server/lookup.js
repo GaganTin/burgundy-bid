@@ -672,85 +672,42 @@ async function ct_get_wine_data(page, wine_url, size = '') {
   return result;
 }
 
-// Navigates to a worldwide WS search page and, if the session has a non-worldwide
-// location saved, clicks the UI to change it to Worldwide so subsequent searches
-// return global results. The '-' in the search URL is the primary guarantee;
-// this is a belt-and-suspenders step that updates the session cookie.
+// Checks .location-selected-container .address on the current WS search page.
+// If not "Worldwide", opens the location modal via .change-location.js-location,
+// activates .google-map__worldwide-button via .js-toggle-worldwide, then saves.
+// Called once before the first wine in a batch — not repeated per wine.
 async function _primeWsLocation(page) {
   try {
     const url = `${WS_BASE}/find/-/any/-/-/ndbipe?Xtax_mode=e&shoptype=1%2C0`;
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(3000);
     await _waitForPxClear(page, 10000);
 
-    const inner = ((await page.evaluate(() => document.body.innerText).catch(() => '')) || '').toLowerCase();
+    const addressText = await page.locator('.location-selected-container .address').first()
+      .textContent({ timeout: 4000 }).catch(() => null);
 
-    const nonWorldwide = (
-      inner.includes('searching products for') && !inner.slice(0, 4000).includes('worldwide')
-    ) || ['hong kong', 'hk\n', '\nhk ', 'searching for\nhong'].some(kw => inner.slice(0, 2000).includes(kw));
-
-    if (!nonWorldwide) {
-      console.log('[WS] Location already worldwide or undetected — no UI change needed');
+    if (!addressText || addressText.trim().toLowerCase() === 'worldwide') {
+      console.log('[WS] Location is already Worldwide');
       return;
     }
 
-    console.log('[WS] Non-worldwide location detected — attempting to change to Worldwide...');
-    let changed = false;
+    console.log(`[WS] Location is "${addressText.trim()}" — changing to Worldwide...`);
 
-    // Strategy 1: click "Change" link / button near location filter
-    for (const sel of ["a:has-text('Change')", "button:has-text('Change')", "[class*='location'] a", "[class*='location'] button"]) {
-      if (changed) break;
-      try {
-        const el = page.locator(sel).first();
-        if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await el.click({ timeout: 5000 });
-          await page.waitForTimeout(1000);
-          for (const wwLabel of ['Worldwide', 'Any location', 'All locations']) {
-            try {
-              const ww = page.locator(`text=${wwLabel}`).first();
-              if (await ww.isVisible({ timeout: 3000 }).catch(() => false)) {
-                await ww.click({ timeout: 8000 });
-                await page.waitForLoadState('load', { timeout: 30000 }).catch(() => {});
-                await page.waitForTimeout(3000);
-                console.log(`[WS] Location changed to Worldwide via '${sel}' → '${wwLabel}'`);
-                changed = true;
-                break;
-              }
-            } catch (e) {}
-          }
-        }
-      } catch (e) {}
+    await page.locator('.change-location.js-location').first().click({ timeout: 5000 });
+    await page.waitForTimeout(1000);
+
+    const wwBtn = page.locator('.google-map__worldwide-button').first();
+    await wwBtn.waitFor({ state: 'visible', timeout: 5000 });
+    const isActive = await wwBtn.evaluate(el => el.classList.contains('active')).catch(() => false);
+    if (!isActive) {
+      await page.locator('.js-toggle-worldwide').first().click({ timeout: 5000 });
+      await page.waitForTimeout(500);
     }
 
-    // Strategy 2: click the country pill button in the search header (e.g. "Hong Kong")
-    if (!changed) {
-      try {
-        const locPill = page.locator("button:has-text('Hong Kong'), button[aria-label*='location'], [data-testid*='location']").first();
-        if (await locPill.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await locPill.click({ timeout: 5000 });
-          await page.waitForTimeout(1000);
-          for (const wwLabel of ['Worldwide', 'Any location']) {
-            try {
-              const ww = page.locator(`text=${wwLabel}`).first();
-              if (await ww.isVisible({ timeout: 3000 }).catch(() => false)) {
-                await ww.click({ timeout: 8000 });
-                await page.waitForLoadState('load', { timeout: 30000 }).catch(() => {});
-                await page.waitForTimeout(3000);
-                console.log('[WS] Location changed to Worldwide via location pill button');
-                changed = true;
-                break;
-              }
-            } catch (e) {}
-          }
-        }
-      } catch (e) {
-        console.log(`[WS] Location pill click failed: ${e.message}`);
-      }
-    }
-
-    if (!changed) {
-      console.log("[WS] Could not change location via UI — results will still be worldwide due to '-' in search URL");
-    }
+    await page.locator('.js-save-location').first().click({ timeout: 5000 });
+    try { await page.waitForLoadState('domcontentloaded', { timeout: 15000 }); } catch (e) {}
+    await page.waitForTimeout(2000);
+    console.log('[WS] Location changed to Worldwide successfully');
   } catch (exc) {
     console.log(`[WS] Could not prime worldwide location — ${exc.message}`);
   }
