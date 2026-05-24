@@ -451,6 +451,12 @@ function _sizeToMl(size) {
   return _WS_VOLUME_MAP[_normalizeBottleSize(size)] || 750;
 }
 
+function _sizeToWsVolume(size) {
+  if (!size) return null;
+  const vol = _WS_VOLUME_MAP[_normalizeBottleSize(size)];
+  return (vol && vol !== 750) ? vol : null;
+}
+
 // From a list of [sizeHint, url] pairs for one vintage, pick the URL matching requested size.
 // Falls back to first candidate (usually 750ml standard) if no exact match.
 function _bestCtUrlForSize(candidates, requestedSize) {
@@ -948,7 +954,13 @@ function _wsIsNotFound(r) {
 // parts, retries with front-trimmed then back-trimmed name variants.
 async function _wsLookupWithFallback(wsPage, name, vintage, wsCurrency, size) {
   function buildUrl(n) {
-    return `${WS_BASE}/find/${encodeURIComponent(n)}/${vintage || 'any'}/-/?Xcurrencycode=${wsCurrency}&Xtax_mode=e&shoptype=1%2C0&Xsavecurrency=Y`;
+    const nameEnc = encodeURIComponent(n).replace(/%20/g, '+');
+    const vtg     = vintage || 'any';
+    const curr    = (wsCurrency || 'USD').toUpperCase();
+    const wsVol   = _sizeToWsVolume(size);
+    let url = `${WS_BASE}/find/${nameEnc}/${vtg}/-/${curr}/ndbipe?Xtax_mode=e&shoptype=1%2C0&Xsavecurrency=Y`;
+    if (wsVol) url += `&volume=${wsVol}`;
+    return url;
   }
 
   const r0 = await ws_get_wine_data(wsPage, buildUrl(name), size);
