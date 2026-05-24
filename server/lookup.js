@@ -672,6 +672,90 @@ async function ct_get_wine_data(page, wine_url, size = '') {
   return result;
 }
 
+// Navigates to a worldwide WS search page and, if the session has a non-worldwide
+// location saved, clicks the UI to change it to Worldwide so subsequent searches
+// return global results. The '-' in the search URL is the primary guarantee;
+// this is a belt-and-suspenders step that updates the session cookie.
+async function _primeWsLocation(page) {
+  try {
+    const url = `${WS_BASE}/find/-/any/-/-/ndbipe?Xtax_mode=e&shoptype=1%2C0`;
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(4000);
+    await _waitForPxClear(page, 10000);
+
+    const inner = ((await page.evaluate(() => document.body.innerText).catch(() => '')) || '').toLowerCase();
+
+    const nonWorldwide = (
+      inner.includes('searching products for') && !inner.slice(0, 4000).includes('worldwide')
+    ) || ['hong kong', 'hk\n', '\nhk ', 'searching for\nhong'].some(kw => inner.slice(0, 2000).includes(kw));
+
+    if (!nonWorldwide) {
+      console.log('[WS] Location already worldwide or undetected — no UI change needed');
+      return;
+    }
+
+    console.log('[WS] Non-worldwide location detected — attempting to change to Worldwide...');
+    let changed = false;
+
+    // Strategy 1: click "Change" link / button near location filter
+    for (const sel of ["a:has-text('Change')", "button:has-text('Change')", "[class*='location'] a", "[class*='location'] button"]) {
+      if (changed) break;
+      try {
+        const el = page.locator(sel).first();
+        if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await el.click({ timeout: 5000 });
+          await page.waitForTimeout(1000);
+          for (const wwLabel of ['Worldwide', 'Any location', 'All locations']) {
+            try {
+              const ww = page.locator(`text=${wwLabel}`).first();
+              if (await ww.isVisible({ timeout: 3000 }).catch(() => false)) {
+                await ww.click({ timeout: 8000 });
+                await page.waitForLoadState('load', { timeout: 30000 }).catch(() => {});
+                await page.waitForTimeout(3000);
+                console.log(`[WS] Location changed to Worldwide via '${sel}' → '${wwLabel}'`);
+                changed = true;
+                break;
+              }
+            } catch (e) {}
+          }
+        }
+      } catch (e) {}
+    }
+
+    // Strategy 2: click the country pill button in the search header (e.g. "Hong Kong")
+    if (!changed) {
+      try {
+        const locPill = page.locator("button:has-text('Hong Kong'), button[aria-label*='location'], [data-testid*='location']").first();
+        if (await locPill.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await locPill.click({ timeout: 5000 });
+          await page.waitForTimeout(1000);
+          for (const wwLabel of ['Worldwide', 'Any location']) {
+            try {
+              const ww = page.locator(`text=${wwLabel}`).first();
+              if (await ww.isVisible({ timeout: 3000 }).catch(() => false)) {
+                await ww.click({ timeout: 8000 });
+                await page.waitForLoadState('load', { timeout: 30000 }).catch(() => {});
+                await page.waitForTimeout(3000);
+                console.log('[WS] Location changed to Worldwide via location pill button');
+                changed = true;
+                break;
+              }
+            } catch (e) {}
+          }
+        }
+      } catch (e) {
+        console.log(`[WS] Location pill click failed: ${e.message}`);
+      }
+    }
+
+    if (!changed) {
+      console.log("[WS] Could not change location via UI — results will still be worldwide due to '-' in search URL");
+    }
+  } catch (exc) {
+    console.log(`[WS] Could not prime worldwide location — ${exc.message}`);
+  }
+}
+
 async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions = true) {
   const result = { ws_matched: null, ws_wine_url: null, ws_avg: null, ws_min: null, ws_error: null };
   try {
@@ -1517,6 +1601,7 @@ async function runLookupForBatch(batchId, logger = () => {}, options = {}) {
       } catch (e) {
         console.log('[WS] Pre-lookup auth check error (non-fatal):', e.message);
       }
+      if (wsPage) await _primeWsLocation(wsPage).catch(e => console.log('[WS] Location prime error (non-fatal):', e.message));
     } else {
       console.log(`Skipping Wine Searcher browser (connected=${wsConnected} enabled=${wsEnabled})`);
     }
