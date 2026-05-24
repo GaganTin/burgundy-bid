@@ -844,7 +844,13 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
     if (amounts.length) {
       ws_min = '$' + Math.round(Math.min(...amounts)).toLocaleString('en-US');
     } else if (statsFromM) {
-      ws_min = _roundPrice('$' + statsFromM[1]);
+      const candidate = _roundPrice('$' + statsFromM[1]);
+      if (!exclude_auctions) {
+        ws_min = candidate;
+      } else {
+        const ctx = text.slice(Math.max(0, statsFromM.index - 200), statsFromM.index + statsFromM[0].length + 50);
+        if (!AUCTION_KW.test(ctx)) ws_min = candidate;
+      }
     } else {
       const mm = html.match(/from[^<]{0,20}\$([\d,]+(?:\.\d+)?)/i);
       if (mm) ws_min = _roundPrice('$' + mm[1]);
