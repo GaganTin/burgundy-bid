@@ -426,86 +426,100 @@ async function _tryFixWsHomeCountry(page) {
   }
 }
 
-// Poll until PerimeterX clears or timeout. Returns true when page is clear.
-// Checks whether the WS session has a non-worldwide location active and, if so,
-// changes it to Worldwide via the UI (updating the session cookie so all
-// subsequent searches in this session inherit the worldwide context).
-// Returns true if the location was changed (caller should re-read html/text).
-async function _ensureWsWorldwide(page) {
+// Open the WS location modal, select Worldwide, and click Save.
+// This is the correct three-step flow: Change → Worldwide → Save.
+// `force`: when true, skip the "already Worldwide" early-exit and always attempt the change.
+// Returns true if Save was clicked (caller should re-read prices after a reload).
+async function _ensureWsWorldwide(page, force = false) {
   try {
-    // ── Detect non-worldwide ───────────────────────────────────────────────────
-    // WS shows "Searching products for: <Country>" when a country preference is
-    // active. "Worldwide" appears in that text when already worldwide.
-    const inner = ((await page.evaluate(() => document.body.innerText).catch(() => '')) || '').toLowerCase();
-
-    const hasCountryFilter = inner.includes('searching products for') && !inner.slice(0, 4000).includes('worldwide');
-    const knownCountries = ['hong kong', 'united states', 'australia', 'united kingdom', 'germany', 'france', 'japan', 'canada'];
-    const hasKnownCountry = knownCountries.some(c => inner.slice(0, 2000).includes(c));
-
-    // CSS selector as additional signal
+    // ── Detect non-worldwide (skip when force=true) ───────────────────────────
     let addressText = null;
     try {
-      addressText = await page.locator('.location-selected-container .address').first()
+      // Works on both the homepage nav bar and the search-results sidebar.
+      addressText = await page.locator('.change-location .address, .filter-list__item .address, .location-selected-container .address').first()
         .textContent({ timeout: 2000 });
-    } catch (e) { /* ignore */ }
+    } catch (e) { /* ignore — not all pages have this element */ }
 
+    const inner = ((await page.evaluate(() => document.body.innerText).catch(() => '')) || '').toLowerCase();
+    const hasCountryFilter = inner.includes('searching products for') && !inner.slice(0, 4000).includes('worldwide');
+    const knownCountries = ['hong kong', 'united states', 'australia', 'united kingdom', 'germany', 'france', 'japan', 'canada', 'singapore'];
+    const hasKnownCountry = knownCountries.some(c => inner.slice(0, 2000).includes(c));
     const cssSaysNonWorldwide = addressText && addressText.trim().toLowerCase() !== 'worldwide';
     const isNonWorldwide = hasCountryFilter || hasKnownCountry || cssSaysNonWorldwide;
 
-    if (!isNonWorldwide) {
-      const hint = addressText ? `sidebar="${addressText.trim()}"` : 'text check';
-      console.log(`[WS] Location already Worldwide (${hint})`);
+    if (!force && !isNonWorldwide) {
+      console.log(`[WS] Location already Worldwide (sidebar="${addressText?.trim() || 'n/a'}")`);
       return false;
     }
 
     const detected = addressText ? `"${addressText.trim()}"` : '(text-detected)';
-    console.log(`[WS] Non-worldwide location detected ${detected} — changing to Worldwide...`);
+    console.log(`[WS] Setting location to Worldwide (current=${detected}, force=${force})...`);
 
-    // ── Click the "Change" button ─────────────────────────────────────────────
-    // Try the most specific selector first; fall back once.
-    let clicked = false;
-    for (const sel of ['.change-location.js-location', "a:has-text('Change')", "button:has-text('Change')", "[class*='location'] a"]) {
+    // ── Step 1: Click the "Change location" button to open the modal ──────────
+    // WS renders this as a <span class="change-location js-location"> on nav and sidebar.
+    let modalOpened = false;
+    for (const sel of ['.change-location.js-location', 'span.js-location', "span:has-text('Change')", ".filter-list__item span.js-location"]) {
       try {
         const el = page.locator(sel).first();
         await el.waitFor({ state: 'visible', timeout: 2000 });
         await el.click({ timeout: 3000 });
-        clicked = true;
-        console.log(`[WS] Clicked Change via "${sel}"`);
+        modalOpened = true;
+        console.log(`[WS] Opened location modal via "${sel}"`);
         break;
       } catch (e) { /* try next */ }
     }
-    if (!clicked) {
-      console.log('[WS] Could not click Change button — saving diagnostic');
-      await _saveDiag(page, 'ws_location_no_change_btn');
+    if (!modalOpened) {
+      console.log('[WS] Could not open location modal');
+      await _saveDiag(page, 'ws_location_no_modal_btn');
       return false;
     }
 
     await page.waitForTimeout(1000);
 
-    // ── Click Worldwide in the picker ─────────────────────────────────────────
-    // WS button text is "Worldwide / Any Location"; use CSS-class selectors first.
+    // ── Step 2: Click the "Worldwide" option ─────────────────────────────────
+    // The modal contains .google-map__worldwide-button with a .js-toggle-worldwide span.
+    // Clicking the span (or its parent div) selects it (adds "active" class).
     let wwClicked = false;
-    for (const sel of ['button.js-toggle-worldwide', '[data-mapstatus="worldwide"]', 'text=Worldwide', 'text=Any location']) {
+    for (const sel of [
+      '.js-toggle-worldwide[data-location="worldwide"]',
+      '.google-map__worldwide-button .js-toggle-worldwide',
+      '.google-map__worldwide-button',
+    ]) {
       try {
         const el = page.locator(sel).first();
         await el.waitFor({ state: 'visible', timeout: 3000 });
         await el.click({ timeout: 3000 });
         wwClicked = true;
-        console.log(`[WS] Clicked Worldwide via "${sel}"`);
+        console.log(`[WS] Selected Worldwide via "${sel}"`);
         break;
       } catch (e) { /* try next */ }
     }
-
     if (!wwClicked) {
-      console.log('[WS] Could not find Worldwide button — saving diagnostic');
+      console.log('[WS] Could not find Worldwide option in modal');
       await _saveDiag(page, 'ws_location_no_worldwide_btn');
       return false;
     }
 
-    // Wait for WS to finish its PJAX update (matches Python's wait_for_load_state("load"))
-    try { await page.waitForLoadState('load', { timeout: 30000 }); } catch (e) {}
+    await page.waitForTimeout(500);
+
+    // ── Step 3: Click "Save" to commit the worldwide selection ────────────────
+    // Without this step the preference is NOT saved — the modal just closes
+    // and the location reverts on the next navigation.
+    let saved = false;
+    try {
+      const saveBtn = page.locator('button.js-save-location').first();
+      await saveBtn.waitFor({ state: 'visible', timeout: 3000 });
+      await saveBtn.click({ timeout: 3000 });
+      saved = true;
+      console.log('[WS] Clicked Save — worldwide preference committed');
+    } catch (e) {
+      console.log(`[WS] Save button not found: ${e.message} — proceeding anyway`);
+    }
+
+    // Wait for the modal to close and PJAX to finish updating the page.
+    try { await page.locator('.modal.show, .modal.fade.show').waitFor({ state: 'hidden', timeout: 8000 }); } catch (e) {}
     await page.waitForTimeout(3000);
-    console.log('[WS] Location changed to Worldwide — re-reading page for worldwide prices');
+    console.log('[WS] Location set to Worldwide');
     return true;
   } catch (e) {
     console.log(`[WS] Location enforcement skipped (non-fatal): ${e.message}`);
@@ -830,56 +844,47 @@ async function ct_get_wine_data(page, wine_url, size = '') {
 // any wine searches begin.
 async function _primeWsLocation(page) {
   try {
-    // Clear location-preference cookies BEFORE navigating.
-    // ws_prof (~34 bytes binary) encodes the saved location; clearing it causes
-    // WS to create a fresh one based on the URL location segment (`-` = worldwide).
-    // ws_cart_idUS may also bias price filtering toward US.
-    // Log all WS cookies for diagnostics, then clear the location-preference ones.
+    // Clear only location-preference cookies; keep auth cookies intact so the
+    // logged-in session remains valid for the modal interaction.
     const ctx = page.context();
     try {
       const allCookies = await ctx.cookies();
       const wsCookies = allCookies.filter(c => (c.domain || '').includes('wine-searcher'));
-      console.log(`[WS] Pre-clear cookies: ${wsCookies.map(c => `${c.name}(${(c.value||'').slice(0,8)})`).join(', ')}`);
-      // Clear ALL WS cookies to force a fresh anonymous session.
-      // Account-level US location preference overrides URL-based worldwide location
-      // even after UI changes, so we must operate without account context to get worldwide prices.
-      const nonWsCookies = allCookies.filter(c => !(c.domain || '').includes('wine-searcher'));
-      await ctx.clearCookies();
-      if (nonWsCookies.length > 0) await ctx.addCookies(nonWsCookies);
-      console.log(`[WS] Cleared ${wsCookies.length} WS cookies for anonymous session`);
+      console.log(`[WS] Pre-prime cookies: ${wsCookies.map(c => `${c.name}(${(c.value||'').slice(0,8)})`).join(', ')}`);
+      const locationCookies = ['ws_prof', 'ws_cart_idUS', 'ws_loc'];
+      const toRemove = wsCookies.filter(c => locationCookies.includes(c.name));
+      if (toRemove.length > 0) {
+        const keep = allCookies.filter(c => !toRemove.some(r => r.name === c.name && r.domain === c.domain));
+        await ctx.clearCookies();
+        if (keep.length > 0) await ctx.addCookies(keep);
+        console.log(`[WS] Cleared location cookies: ${toRemove.map(c => c.name).join(', ')}`);
+      }
     } catch (e) {
       console.log(`[WS] Cookie clear skipped: ${e.message}`);
     }
 
-    const url = `${WS_BASE}/find/-/any/-/-/ndbipe?Xtax_mode=e&shoptype=1%2C0&Xsavelocation=Y`;
+    const url = `${WS_BASE}/find/-/any/-/-/ndbipe?Xtax_mode=e&shoptype=1%2C0`;
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(2000);
     await _waitForPxClear(page, 8000);
 
-    // Run location enforcement on the warm-up page.
-    const changed = await _ensureWsWorldwide(page);
+    // Always force worldwide — open the modal, click Worldwide, click Save.
+    // force=true skips the sidebar-text check so we always commit the Save click.
+    const changed = await _ensureWsWorldwide(page, true);
     if (changed) {
+      // Reload to confirm the saved preference took effect.
       try { await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }); } catch (e) {}
       await page.waitForTimeout(1000);
     }
 
     // Log the final sidebar state for diagnostics.
     try {
-      const addr = await page.locator('.location-selected-container .address').first()
+      const addr = await page.locator('.change-location .address, .filter-list__item .address').first()
         .textContent({ timeout: 2000 }).catch(() => null);
       console.log(`[WS] Pre-batch warm-up complete — sidebar="${addr?.trim() || 'unknown'}"`);
     } catch (e) {
       console.log('[WS] Pre-batch warm-up complete');
     }
-
-    // Attempt to find and log WS account settings page for home-country diagnostics.
-    await _tryFixWsHomeCountry(page);
-    // Navigate back to a WS search page so the next page.goto() in ws_get_wine_data
-    // comes from a search context rather than a profile page (less PX suspicion).
-    try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.waitForTimeout(1000);
-    } catch (e) {}
   } catch (exc) {
     console.log(`[WS] Pre-batch warm-up skipped — ${exc.message}`);
   }
@@ -1645,6 +1650,8 @@ async function runLookupForBatch(batchId, logger = () => {}, options = {}) {
         viewport: profile.viewport,
         locale: 'en-US',
         timezoneId: 'America/New_York',
+        geolocation: null,
+        permissions: [],
         ...(proxyConfig ? { proxy: proxyConfig } : {}),
       };
       try {
