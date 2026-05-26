@@ -361,6 +361,74 @@ function _unlockProfile(profileDir) {
   }
 }
 
+// Navigate to the WS account preferences page, log its structure, and
+// attempt to change the "home market" to worldwide.
+// Non-fatal: any failure just logs a warning. Call once per batch.
+async function _tryFixWsHomeCountry(page) {
+  try {
+    await page.goto(`${WS_BASE}/prof/edit`, { waitUntil: 'domcontentloaded', timeout: 25000 });
+    await page.waitForTimeout(1500);
+    const urlNow = page.url();
+    const innerText = ((await page.evaluate(() => document.body.innerText).catch(() => '')) || '');
+    console.log(`[WS profile] /prof/edit → ${urlNow.slice(0, 100)}`);
+    console.log(`[WS profile] text(0-400): ${innerText.slice(0, 400).replace(/\n+/g, ' ')}`);
+
+    // Log select fields (name, current value, available options)
+    const selects = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('select')).map(s => ({
+        name: s.name || s.id || '?',
+        value: s.value,
+        opts: Array.from(s.options).slice(0, 15).map(o => `${o.value}=${o.text}`),
+      }))
+    ).catch(() => []);
+    if (selects.length > 0) {
+      console.log(`[WS profile] selects: ${JSON.stringify(selects)}`);
+
+      // Find the home-country/location/market select and set it to worldwide.
+      // Try known field names; WS might use "country", "market", "home_market", etc.
+      const locFieldNames = ['home_country', 'country', 'home_market', 'market', 'location', 'preferred_location', 'region'];
+      const locSelect = selects.find(s => locFieldNames.some(n => s.name.toLowerCase().includes(n)));
+      if (locSelect) {
+        // WS "worldwide" option is often value="" or "-" or "0"
+        const wwOpts = locSelect.opts.filter(o => /^(-|0|any|world|^=)/i.test(o.split('=')[0]));
+        console.log(`[WS profile] Location select "${locSelect.name}" current="${locSelect.value}", worldwide candidates: ${wwOpts.slice(0, 3)}`);
+        if (locSelect.value !== '' && locSelect.value !== '-' && locSelect.value !== '0') {
+          // Set to the first worldwide candidate, then submit the form
+          const wwValue = (wwOpts[0] || '').split('=')[0] || '-';
+          const changed = await page.evaluate((selName, val) => {
+            const el = document.querySelector(`select[name="${selName}"]`) ||
+                       document.querySelector(`select#${selName}`);
+            if (!el) return false;
+            el.value = val;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+          }, locSelect.name, wwValue).catch(() => false);
+          if (changed) {
+            console.log(`[WS profile] Set "${locSelect.name}" to "${wwValue}" — submitting form`);
+            const submitted = await page.evaluate(() => {
+              const form = document.querySelector('form');
+              if (form) { form.submit(); return true; }
+              return false;
+            }).catch(() => false);
+            if (submitted) {
+              await page.waitForTimeout(2000);
+              console.log('[WS profile] Form submitted — home country may now be worldwide');
+            }
+          }
+        } else {
+          console.log(`[WS profile] "${locSelect.name}" already set to worldwide value "${locSelect.value}"`);
+        }
+      } else {
+        console.log('[WS profile] No location/country select found on /prof/edit');
+      }
+    } else {
+      console.log('[WS profile] No select fields found on /prof/edit (may need login or different page)');
+    }
+  } catch (e) {
+    console.log(`[WS profile] /prof/edit navigation failed: ${e.message}`);
+  }
+}
+
 // Poll until PerimeterX clears or timeout. Returns true when page is clear.
 // Checks whether the WS session has a non-worldwide location active and, if so,
 // changes it to Worldwide via the UI (updating the session cookie so all
@@ -786,17 +854,14 @@ async function _primeWsLocation(page) {
       console.log(`[WS] Cookie clear skipped: ${e.message}`);
     }
 
-    const url = `${WS_BASE}/find/-/any/-/-/ndbipe?Xtax_mode=e&shoptype=1%2C0`;
+    const url = `${WS_BASE}/find/-/any/-/-/ndbipe?Xtax_mode=e&shoptype=1%2C0&Xsavelocation=Y`;
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(2000);
     await _waitForPxClear(page, 8000);
 
-    // Run location enforcement on the warm-up page so the session is Worldwide
-    // before any wine searches start. Even if the sidebar already says Worldwide,
-    // the cookie clear above may have reset things — run it once to be sure.
+    // Run location enforcement on the warm-up page.
     const changed = await _ensureWsWorldwide(page);
     if (changed) {
-      // WS saved the worldwide preference; reload the warm-up page to confirm.
       try { await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }); } catch (e) {}
       await page.waitForTimeout(1000);
     }
@@ -809,6 +874,15 @@ async function _primeWsLocation(page) {
     } catch (e) {
       console.log('[WS] Pre-batch warm-up complete');
     }
+
+    // Attempt to find and log WS account settings page for home-country diagnostics.
+    await _tryFixWsHomeCountry(page);
+    // Navigate back to a WS search page so the next page.goto() in ws_get_wine_data
+    // comes from a search context rather than a profile page (less PX suspicion).
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(1000);
+    } catch (e) {}
   } catch (exc) {
     console.log(`[WS] Pre-batch warm-up skipped — ${exc.message}`);
   }
@@ -853,10 +927,7 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
 
     // ── Worldwide location enforcement ────────────────────────────────────────
     // Runs after PX is cleared so we act on the actual search results page.
-    // Cheap no-op when location is already Worldwide.
-    // On success: reload() to get fresh worldwide prices — WS saves the preference
-    // to the session but the price grid doesn't auto-update via PJAX.
-    // reload() mimics F5 and avoids the goto(same-url) PX trigger.
+    // On success: reload() to get fresh worldwide prices.
     if (await _ensureWsWorldwide(page)) {
       try { await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }); } catch (e) {}
       await page.waitForTimeout(2000);
@@ -864,6 +935,14 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
       text = (await page.evaluate(() => document.body.innerText)) || '';
       actual_url = page.url() || search_url;
     }
+
+    // Diagnostic: log first 600 chars of page text and a mid-section slice.
+    try {
+      const snippet1 = text.slice(0, 400).replace(/\n{3,}/g, '\n\n');
+      const snippet2 = text.slice(400, 800).replace(/\n{3,}/g, '\n\n');
+      console.log(`[WS diag] Page text 0-400:\n${snippet1}`);
+      console.log(`[WS diag] Page text 400-800:\n${snippet2}`);
+    } catch (e) {}
 
     // Detect WS "no results" page before trying to parse prices
     const lowerText = text.toLowerCase();
@@ -1115,7 +1194,7 @@ async function _wsLookupWithFallback(wsPage, name, vintage, wsCurrency, size) {
     const vtg     = vintage || 'any';
     const curr    = (wsCurrency || 'USD').toUpperCase();
     const wsVol   = _sizeToWsVolume(size);
-    let url = `${WS_BASE}/find/${nameEnc}/${vtg}/-/${curr}/ndbipe?Xtax_mode=e&shoptype=1%2C0&Xsavecurrency=Y`;
+    let url = `${WS_BASE}/find/${nameEnc}/${vtg}/-/${curr}/ndbipe?Xtax_mode=e&shoptype=1%2C0&Xsavecurrency=Y&Xsavelocation=Y`;
     if (wsVol) url += `&volume=${wsVol}`;
     return url;
   }
