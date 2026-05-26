@@ -1650,8 +1650,6 @@ async function runLookupForBatch(batchId, logger = () => {}, options = {}) {
         viewport: profile.viewport,
         locale: 'en-US',
         timezoneId: 'America/New_York',
-        geolocation: null,
-        permissions: [],
         ...(proxyConfig ? { proxy: proxyConfig } : {}),
       };
       try {
