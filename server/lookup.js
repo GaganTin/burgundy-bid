@@ -813,8 +813,12 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
     // ── Worldwide location enforcement ────────────────────────────────────────
     // Runs after PX is cleared so we act on the actual search results page.
     // Cheap no-op when location is already Worldwide.
-    // On success: re-read the page (WS does a PJAX update, not a full navigation).
+    // On success: reload() to get fresh worldwide prices — WS saves the preference
+    // to the session but the price grid doesn't auto-update via PJAX.
+    // reload() mimics F5 and avoids the goto(same-url) PX trigger.
     if (await _ensureWsWorldwide(page)) {
+      try { await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }); } catch (e) {}
+      await page.waitForTimeout(2000);
       html = await page.content();
       text = (await page.evaluate(() => document.body.innerText)) || '';
       actual_url = page.url() || search_url;
