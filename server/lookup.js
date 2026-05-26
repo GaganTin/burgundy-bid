@@ -834,19 +834,19 @@ async function _primeWsLocation(page) {
     // ws_prof (~34 bytes binary) encodes the saved location; clearing it causes
     // WS to create a fresh one based on the URL location segment (`-` = worldwide).
     // ws_cart_idUS may also bias price filtering toward US.
+    // Log all WS cookies for diagnostics, then clear the location-preference ones.
     const ctx = page.context();
     try {
       const allCookies = await ctx.cookies();
-      const locNames = new Set(['ws_prof', 'ws_cart_idUS']);
-      const toRemove = allCookies.filter(c => locNames.has(c.name) && (c.domain || '').includes('wine-searcher'));
-      if (toRemove.length > 0) {
-        const toKeep = allCookies.filter(c => !(locNames.has(c.name) && (c.domain || '').includes('wine-searcher')));
-        await ctx.clearCookies();
-        if (toKeep.length > 0) await ctx.addCookies(toKeep);
-        console.log(`[WS] Cleared location cookies: ${toRemove.map(c => c.name).join(', ')}`);
-      } else {
-        console.log('[WS] No location cookies to clear (ws_prof/ws_cart_idUS absent)');
-      }
+      const wsCookies = allCookies.filter(c => (c.domain || '').includes('wine-searcher'));
+      console.log(`[WS] Pre-clear cookies: ${wsCookies.map(c => `${c.name}(${(c.value||'').slice(0,8)})`).join(', ')}`);
+      // Clear ALL WS cookies to force a fresh anonymous session.
+      // Account-level US location preference overrides URL-based worldwide location
+      // even after UI changes, so we must operate without account context to get worldwide prices.
+      const nonWsCookies = allCookies.filter(c => !(c.domain || '').includes('wine-searcher'));
+      await ctx.clearCookies();
+      if (nonWsCookies.length > 0) await ctx.addCookies(nonWsCookies);
+      console.log(`[WS] Cleared ${wsCookies.length} WS cookies for anonymous session`);
     } catch (e) {
       console.log(`[WS] Cookie clear skipped: ${e.message}`);
     }
