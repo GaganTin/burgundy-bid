@@ -437,8 +437,9 @@ async function _ensureWsWorldwide(page) {
       return false;
     }
 
-    try { await page.waitForLoadState('domcontentloaded', { timeout: 15000 }); } catch (e) {}
-    await page.waitForTimeout(2000);
+    // Wait for WS to finish its PJAX update (matches Python's wait_for_load_state("load"))
+    try { await page.waitForLoadState('load', { timeout: 30000 }); } catch (e) {}
+    await page.waitForTimeout(3000);
     console.log('[WS] Location changed to Worldwide — re-reading page for worldwide prices');
     return true;
   } catch (e) {
@@ -812,11 +813,8 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
     // ── Worldwide location enforcement ────────────────────────────────────────
     // Runs after PX is cleared so we act on the actual search results page.
     // Cheap no-op when location is already Worldwide.
-    // On success: reload search_url from scratch to get a clean worldwide page
-    // (in-page AJAX update after selecting Worldwide may not be sufficient).
+    // On success: re-read the page (WS does a PJAX update, not a full navigation).
     if (await _ensureWsWorldwide(page)) {
-      await page.goto(search_url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(2000);
       html = await page.content();
       text = (await page.evaluate(() => document.body.innerText)) || '';
       actual_url = page.url() || search_url;
