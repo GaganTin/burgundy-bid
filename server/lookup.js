@@ -759,15 +759,56 @@ async function ct_get_wine_data(page, wine_url, size = '') {
 }
 
 // Warm-up navigation before the first wine in a batch.
-// Keeps interaction minimal to avoid triggering PX; location enforcement
-// happens inside ws_get_wine_data on the actual search results page.
+// Clears ws_prof (binary preference cookie) so WS re-derives location from
+// the URL's `-` segment (= worldwide) instead of a stale account preference.
+// Then runs _ensureWsWorldwide once so the session cookie is worldwide before
+// any wine searches begin.
 async function _primeWsLocation(page) {
   try {
+    // Clear location-preference cookies BEFORE navigating.
+    // ws_prof (~34 bytes binary) encodes the saved location; clearing it causes
+    // WS to create a fresh one based on the URL location segment (`-` = worldwide).
+    // ws_cart_idUS may also bias price filtering toward US.
+    const ctx = page.context();
+    try {
+      const allCookies = await ctx.cookies();
+      const locNames = new Set(['ws_prof', 'ws_cart_idUS']);
+      const toRemove = allCookies.filter(c => locNames.has(c.name) && (c.domain || '').includes('wine-searcher'));
+      if (toRemove.length > 0) {
+        const toKeep = allCookies.filter(c => !(locNames.has(c.name) && (c.domain || '').includes('wine-searcher')));
+        await ctx.clearCookies();
+        if (toKeep.length > 0) await ctx.addCookies(toKeep);
+        console.log(`[WS] Cleared location cookies: ${toRemove.map(c => c.name).join(', ')}`);
+      } else {
+        console.log('[WS] No location cookies to clear (ws_prof/ws_cart_idUS absent)');
+      }
+    } catch (e) {
+      console.log(`[WS] Cookie clear skipped: ${e.message}`);
+    }
+
     const url = `${WS_BASE}/find/-/any/-/-/ndbipe?Xtax_mode=e&shoptype=1%2C0`;
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(2000);
     await _waitForPxClear(page, 8000);
-    console.log('[WS] Pre-batch warm-up complete');
+
+    // Run location enforcement on the warm-up page so the session is Worldwide
+    // before any wine searches start. Even if the sidebar already says Worldwide,
+    // the cookie clear above may have reset things — run it once to be sure.
+    const changed = await _ensureWsWorldwide(page);
+    if (changed) {
+      // WS saved the worldwide preference; reload the warm-up page to confirm.
+      try { await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }); } catch (e) {}
+      await page.waitForTimeout(1000);
+    }
+
+    // Log the final sidebar state for diagnostics.
+    try {
+      const addr = await page.locator('.location-selected-container .address').first()
+        .textContent({ timeout: 2000 }).catch(() => null);
+      console.log(`[WS] Pre-batch warm-up complete — sidebar="${addr?.trim() || 'unknown'}"`);
+    } catch (e) {
+      console.log('[WS] Pre-batch warm-up complete');
+    }
   } catch (exc) {
     console.log(`[WS] Pre-batch warm-up skipped — ${exc.message}`);
   }
