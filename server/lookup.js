@@ -362,6 +362,104 @@ function _unlockProfile(profileDir) {
 }
 
 // Poll until PerimeterX clears or timeout. Returns true when page is clear.
+// Checks WS location sidebar on the current search results page.
+// If not "Worldwide", clicks Change → selects Worldwide / Any Location.
+// Returns true if the location was changed (caller should re-read html/text).
+async function _ensureWsWorldwide(page) {
+  try {
+    let addressText = null;
+    try {
+      addressText = await page.locator('.location-selected-container .address').first()
+        .textContent({ timeout: 8000 });
+    } catch (e) {
+      console.log('[WS] Location address element not found — assuming worldwide');
+      return false;
+    }
+
+    if (!addressText || addressText.trim().toLowerCase() === 'worldwide') {
+      console.log('[WS] Location already Worldwide');
+      return false;
+    }
+
+    console.log(`[WS] Location is "${addressText.trim()}" — changing to Worldwide...`);
+
+    // Click the "Change" button
+    const changeSelectors = [
+      '.change-location.js-location',
+      '.js-location',
+      'span.change-location',
+    ];
+    let clicked = false;
+    for (const sel of changeSelectors) {
+      try {
+        await page.locator(sel).first().click({ timeout: 4000 });
+        clicked = true;
+        console.log(`[WS] Clicked Change via "${sel}"`);
+        break;
+      } catch (e) { /* try next */ }
+    }
+    if (!clicked) {
+      try {
+        await page.getByText('Change', { exact: true }).first().click({ timeout: 4000 });
+        clicked = true;
+        console.log('[WS] Clicked Change via getByText fallback');
+      } catch (e) {}
+    }
+    if (!clicked) {
+      console.log('[WS] Could not click Change button — saving diagnostic');
+      await _saveDiag(page, 'ws_location_no_change_btn');
+      return false;
+    }
+
+    await page.waitForTimeout(1500);
+
+    // Click Worldwide in the modal. WS button text: "Worldwide / Any Location"
+    const wwSelectors = [
+      'button.js-toggle-worldwide',
+      '[data-mapstatus="worldwide"]',
+      'button.toggle-worldwide',
+    ];
+    let wwClicked = false;
+    for (const sel of wwSelectors) {
+      try {
+        const el = page.locator(sel).first();
+        await el.waitFor({ state: 'visible', timeout: 4000 });
+        await el.click({ timeout: 4000 });
+        wwClicked = true;
+        console.log(`[WS] Clicked Worldwide via "${sel}"`);
+        break;
+      } catch (e) { /* try next */ }
+    }
+    if (!wwClicked) {
+      // Text-based fallbacks (button text contains "Worldwide")
+      for (const txt of ['Worldwide / Any Location', 'Worldwide', 'Any Location']) {
+        try {
+          const el = page.getByText(txt, { exact: txt === 'Worldwide / Any Location' }).first();
+          await el.waitFor({ state: 'visible', timeout: 3000 });
+          await el.click({ timeout: 3000 });
+          wwClicked = true;
+          console.log(`[WS] Clicked Worldwide via text "${txt}"`);
+          break;
+        } catch (e) { /* try next */ }
+      }
+    }
+
+    if (!wwClicked) {
+      console.log('[WS] Could not find Worldwide button — saving diagnostic');
+      await _saveDiag(page, 'ws_location_no_worldwide_btn');
+      return false;
+    }
+
+    try { await page.waitForLoadState('domcontentloaded', { timeout: 30000 }); } catch (e) {}
+    await page.waitForTimeout(3000);
+    console.log('[WS] Location changed to Worldwide — re-reading page for worldwide prices');
+    return true;
+  } catch (e) {
+    console.log(`[WS] Location enforcement skipped (non-fatal): ${e.message}`);
+    return false;
+  }
+}
+
 async function _waitForPxClear(page, maxWaitMs = 30000) {
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
@@ -698,33 +796,6 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
     let text = (await page.evaluate(() => document.body.innerText)) || '';
     let actual_url = page.url() || search_url;
 
-    // ── Worldwide location enforcement ─────────────────────────────────────────
-    // Check the sidebar filter for the current location. If not "Worldwide", click
-    // the "Change" span which opens a location picker, then click "Worldwide" to
-    // update the session and reload the page with global prices.
-    // This runs on every wine (cheap when already Worldwide) so that reconnected
-    // users with a stale location cookie are fixed automatically.
-    try {
-      const addressText = await page.locator('.location-selected-container .address').first()
-        .textContent({ timeout: 2000 }).catch(() => null);
-      if (addressText && addressText.trim().toLowerCase() !== 'worldwide') {
-        console.log(`[WS] Location is "${addressText.trim()}" — changing to Worldwide on search page...`);
-        await page.locator('.change-location.js-location').first().click({ timeout: 4000 });
-        await page.waitForTimeout(1000);
-        const wwEl = page.getByText('Worldwide', { exact: true }).first();
-        await wwEl.waitFor({ state: 'visible', timeout: 5000 });
-        await wwEl.click({ timeout: 5000 });
-        try { await page.waitForLoadState('domcontentloaded', { timeout: 30000 }); } catch (e) {}
-        await page.waitForTimeout(2500);
-        html = await page.content();
-        text = (await page.evaluate(() => document.body.innerText)) || '';
-        actual_url = page.url() || search_url;
-        console.log('[WS] Location changed to Worldwide — re-read page for worldwide prices');
-      }
-    } catch (e) {
-      console.log(`[WS] Location check skipped (non-fatal): ${e.message}`);
-    }
-
     if (PX_SIGNALS.some(sig => (text + html).toLowerCase().includes(sig))) {
       console.log('[PX] Captcha detected during wine search — attempting behavioral solve...');
       // Pre-solve jitter: randomise start time per-user so concurrent sessions
@@ -748,6 +819,15 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
       await page.waitForTimeout(2000);
       html = await page.content();
       text = (await page.evaluate(() => document.body.innerText)) || '';
+    }
+
+    // ── Worldwide location enforcement ────────────────────────────────────────
+    // Runs after PX is cleared so we act on the actual search results page.
+    // Cheap no-op when location is already Worldwide.
+    if (await _ensureWsWorldwide(page)) {
+      html = await page.content();
+      text = (await page.evaluate(() => document.body.innerText)) || '';
+      actual_url = page.url() || search_url;
     }
 
     // Detect WS "no results" page before trying to parse prices
