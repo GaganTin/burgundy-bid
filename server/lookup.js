@@ -381,51 +381,48 @@ async function _tryFixWsHomeCountry(page) {
         opts: Array.from(s.options).slice(0, 15).map(o => `${o.value}=${o.text}`),
       }))
     ).catch(() => []);
-    if (selects.length > 0) {
-      console.log(`[WS profile] selects: ${JSON.stringify(selects)}`);
+    const diagInfo = { url: urlNow, selects, textSnippet: innerText.slice(0, 600) };
+    // Write to temp file so the /admin/ws-diag endpoint can surface it.
+    try { fs.writeFileSync('/tmp/ws_profile_diag.json', JSON.stringify(diagInfo, null, 2)); } catch (_e) {}
+    console.log(`[WS profile] selects: ${JSON.stringify(selects)}`);
 
-      // Find the home-country/location/market select and set it to worldwide.
-      // Try known field names; WS might use "country", "market", "home_market", etc.
-      const locFieldNames = ['home_country', 'country', 'home_market', 'market', 'location', 'preferred_location', 'region'];
-      const locSelect = selects.find(s => locFieldNames.some(n => s.name.toLowerCase().includes(n)));
-      if (locSelect) {
-        // WS "worldwide" option is often value="" or "-" or "0"
-        const wwOpts = locSelect.opts.filter(o => /^(-|0|any|world|^=)/i.test(o.split('=')[0]));
-        console.log(`[WS profile] Location select "${locSelect.name}" current="${locSelect.value}", worldwide candidates: ${wwOpts.slice(0, 3)}`);
-        if (locSelect.value !== '' && locSelect.value !== '-' && locSelect.value !== '0') {
-          // Set to the first worldwide candidate, then submit the form
-          const wwValue = (wwOpts[0] || '').split('=')[0] || '-';
-          const changed = await page.evaluate((selName, val) => {
-            const el = document.querySelector(`select[name="${selName}"]`) ||
-                       document.querySelector(`select#${selName}`);
-            if (!el) return false;
-            el.value = val;
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-            return true;
-          }, locSelect.name, wwValue).catch(() => false);
-          if (changed) {
-            console.log(`[WS profile] Set "${locSelect.name}" to "${wwValue}" — submitting form`);
-            const submitted = await page.evaluate(() => {
-              const form = document.querySelector('form');
-              if (form) { form.submit(); return true; }
-              return false;
-            }).catch(() => false);
-            if (submitted) {
-              await page.waitForTimeout(2000);
-              console.log('[WS profile] Form submitted — home country may now be worldwide');
-            }
+    // Find the home-country/location/market select and set it to worldwide.
+    const locFieldNames = ['home_country', 'country', 'home_market', 'market', 'location', 'preferred_location', 'region'];
+    const locSelect = selects.find(s => locFieldNames.some(n => s.name.toLowerCase().includes(n)));
+    if (locSelect) {
+      // WS "worldwide" option is often value="" or "-" or "0"
+      const wwOpts = locSelect.opts.filter(o => /^(-|0|any|world|^=)/i.test(o.split('=')[0]));
+      console.log(`[WS profile] Location select "${locSelect.name}" current="${locSelect.value}", ww candidates: ${wwOpts.slice(0, 3)}`);
+      if (locSelect.value !== '' && locSelect.value !== '-' && locSelect.value !== '0') {
+        const wwValue = (wwOpts[0] || '').split('=')[0] || '-';
+        const changed = await page.evaluate((selName, val) => {
+          const el = document.querySelector(`select[name="${selName}"]`) ||
+                     document.querySelector(`select#${selName}`);
+          if (!el) return false;
+          el.value = val;
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }, locSelect.name, wwValue).catch(() => false);
+        if (changed) {
+          console.log(`[WS profile] Set "${locSelect.name}" to "${wwValue}" — submitting form`);
+          const submitted = await page.evaluate(() => {
+            const form = document.querySelector('form');
+            if (form) { form.submit(); return true; }
+            return false;
+          }).catch(() => false);
+          if (submitted) {
+            await page.waitForTimeout(2000);
+            console.log('[WS profile] Form submitted — home country may now be worldwide');
           }
-        } else {
-          console.log(`[WS profile] "${locSelect.name}" already set to worldwide value "${locSelect.value}"`);
         }
       } else {
-        console.log('[WS profile] No location/country select found on /prof/edit');
+        console.log(`[WS profile] "${locSelect.name}" already worldwide ("${locSelect.value}")`);
       }
     } else {
-      console.log('[WS profile] No select fields found on /prof/edit (may need login or different page)');
+      console.log('[WS profile] No location/country select found on /prof/edit');
     }
   } catch (e) {
-    console.log(`[WS profile] /prof/edit navigation failed: ${e.message}`);
+    console.log(`[WS profile] /prof/edit failed: ${e.message}`);
   }
 }
 

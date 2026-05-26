@@ -2593,6 +2593,17 @@ app.get('/_health', async (_req, res) => {
   }
 });
 
+// Temporary diagnostic endpoint — reads the WS profile diag written by _tryFixWsHomeCountry.
+app.get('/_diag/ws-profile', async (_req, res) => {
+  try {
+    const { readFileSync } = await import('node:fs');
+    const data = readFileSync('/tmp/ws_profile_diag.json', 'utf8');
+    return res.json(JSON.parse(data));
+  } catch (e) {
+    return res.status(404).json({ error: e.message });
+  }
+});
+
 // Generic entity endpoints for WineLookup and SiteCredential
 app.get('/entities/:entity', async (req, res) => {
   const { entity } = req.params;
