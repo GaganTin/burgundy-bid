@@ -366,24 +366,23 @@ function _unlockProfile(profileDir) {
 // changes it to Worldwide via the UI (updating the session cookie so all
 // subsequent searches in this session inherit the worldwide context).
 // Returns true if the location was changed (caller should re-read html/text).
-// Uses text-based detection (like Python reference) as primary, CSS as fallback.
 async function _ensureWsWorldwide(page) {
   try {
     // ── Detect non-worldwide ───────────────────────────────────────────────────
     // WS shows "Searching products for: <Country>" when a country preference is
-    // active. "Worldwide" appears in that text when location is already worldwide.
+    // active. "Worldwide" appears in that text when already worldwide.
     const inner = ((await page.evaluate(() => document.body.innerText).catch(() => '')) || '').toLowerCase();
 
     const hasCountryFilter = inner.includes('searching products for') && !inner.slice(0, 4000).includes('worldwide');
     const knownCountries = ['hong kong', 'united states', 'australia', 'united kingdom', 'germany', 'france', 'japan', 'canada'];
     const hasKnownCountry = knownCountries.some(c => inner.slice(0, 2000).includes(c));
 
-    // CSS selector as an additional signal (may not be present on all layouts)
+    // CSS selector as additional signal
     let addressText = null;
     try {
       addressText = await page.locator('.location-selected-container .address').first()
-        .textContent({ timeout: 3000 });
-    } catch (e) { /* ignore — text detection is primary */ }
+        .textContent({ timeout: 2000 });
+    } catch (e) { /* ignore */ }
 
     const cssSaysNonWorldwide = addressText && addressText.trim().toLowerCase() !== 'worldwide';
     const isNonWorldwide = hasCountryFilter || hasKnownCountry || cssSaysNonWorldwide;
@@ -398,25 +397,16 @@ async function _ensureWsWorldwide(page) {
     console.log(`[WS] Non-worldwide location detected ${detected} — changing to Worldwide...`);
 
     // ── Click the "Change" button ─────────────────────────────────────────────
-    const changeSelectors = [
-      "a:has-text('Change')",
-      "button:has-text('Change')",
-      '.change-location.js-location',
-      '.js-location',
-      "[class*='location'] a",
-      "[class*='location'] button",
-      'span.change-location',
-    ];
+    // Try the most specific selector first; fall back once.
     let clicked = false;
-    for (const sel of changeSelectors) {
+    for (const sel of ['.change-location.js-location', "a:has-text('Change')", "button:has-text('Change')", "[class*='location'] a"]) {
       try {
         const el = page.locator(sel).first();
-        if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await el.click({ timeout: 4000 });
-          clicked = true;
-          console.log(`[WS] Clicked Change via "${sel}"`);
-          break;
-        }
+        await el.waitFor({ state: 'visible', timeout: 2000 });
+        await el.click({ timeout: 3000 });
+        clicked = true;
+        console.log(`[WS] Clicked Change via "${sel}"`);
+        break;
       } catch (e) { /* try next */ }
     }
     if (!clicked) {
@@ -425,28 +415,19 @@ async function _ensureWsWorldwide(page) {
       return false;
     }
 
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(1000);
 
     // ── Click Worldwide in the picker ─────────────────────────────────────────
-    // WS button text is "Worldwide / Any Location"; `text=` does partial matching.
-    const wwSelectors = [
-      'button.js-toggle-worldwide',
-      '[data-mapstatus="worldwide"]',
-      'button.toggle-worldwide',
-      'text=Worldwide',
-      'text=Any location',
-      'text=All locations',
-    ];
+    // WS button text is "Worldwide / Any Location"; use CSS-class selectors first.
     let wwClicked = false;
-    for (const sel of wwSelectors) {
+    for (const sel of ['button.js-toggle-worldwide', '[data-mapstatus="worldwide"]', 'text=Worldwide', 'text=Any location']) {
       try {
         const el = page.locator(sel).first();
-        if (await el.isVisible({ timeout: 3000 }).catch(() => false)) {
-          await el.click({ timeout: 4000 });
-          wwClicked = true;
-          console.log(`[WS] Clicked Worldwide via "${sel}"`);
-          break;
-        }
+        await el.waitFor({ state: 'visible', timeout: 3000 });
+        await el.click({ timeout: 3000 });
+        wwClicked = true;
+        console.log(`[WS] Clicked Worldwide via "${sel}"`);
+        break;
       } catch (e) { /* try next */ }
     }
 
@@ -456,8 +437,8 @@ async function _ensureWsWorldwide(page) {
       return false;
     }
 
-    try { await page.waitForLoadState('domcontentloaded', { timeout: 30000 }); } catch (e) {}
-    await page.waitForTimeout(3000);
+    try { await page.waitForLoadState('domcontentloaded', { timeout: 15000 }); } catch (e) {}
+    await page.waitForTimeout(2000);
     console.log('[WS] Location changed to Worldwide — re-reading page for worldwide prices');
     return true;
   } catch (e) {
@@ -777,15 +758,14 @@ async function ct_get_wine_data(page, wine_url, size = '') {
 }
 
 // Warm-up navigation before the first wine in a batch.
-// Navigates to a WS search page and sets location to Worldwide if needed,
-// so all subsequent wine searches in this batch inherit the worldwide context.
+// Keeps interaction minimal to avoid triggering PX; location enforcement
+// happens inside ws_get_wine_data on the actual search results page.
 async function _primeWsLocation(page) {
   try {
     const url = `${WS_BASE}/find/-/any/-/-/ndbipe?Xtax_mode=e&shoptype=1%2C0`;
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(2000);
     await _waitForPxClear(page, 8000);
-    await _ensureWsWorldwide(page);
     console.log('[WS] Pre-batch warm-up complete');
   } catch (exc) {
     console.log(`[WS] Pre-batch warm-up skipped — ${exc.message}`);
