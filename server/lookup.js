@@ -672,86 +672,18 @@ async function ct_get_wine_data(page, wine_url, size = '') {
   return result;
 }
 
-// Navigate to a WS search page with worldwide URL ("-") and, if the session still
-// has a non-worldwide saved location, change it to Worldwide via the UI.
-// Mirrors Python _prime_ws_location: detects non-worldwide by page text, then uses
-// text-based selectors ("Change" link → "Worldwide" option) rather than CSS classes.
-// Called once before the first wine in a batch — not repeated per wine.
+// Warm-up navigation before the first wine in a batch.
+// Location enforcement now happens inside ws_get_wine_data on every search,
+// so this just pre-loads a WS page to establish session state.
 async function _primeWsLocation(page) {
   try {
     const url = `${WS_BASE}/find/-/any/-/-/ndbipe?Xtax_mode=e&shoptype=1%2C0`;
-    await page.goto(url, { waitUntil: 'load', timeout: 90000 });
-    await page.waitForTimeout(4000);
-    await _waitForPxClear(page, 10000);
-
-    const inner = ((await page.evaluate(() => document.body.innerText).catch(() => '')) || '').toLowerCase();
-
-    // "Searching products for: <Country> Change" appears when a non-worldwide location is saved.
-    const nonWorldwide = (inner.includes('searching products for') && !inner.slice(0, 4000).includes('worldwide'))
-      || ['hong kong', 'united states', 'australia', 'united kingdom'].some(c => inner.slice(0, 2000).includes(c));
-
-    if (!nonWorldwide) {
-      console.log('[WS] Location is already Worldwide or undetected — no change needed');
-      return;
-    }
-
-    console.log('[WS] Non-worldwide location detected — attempting to change to Worldwide...');
-    let changed = false;
-
-    // Strategy 1: "Change" link/button in sidebar or search header
-    for (const sel of ["a:has-text('Change')", "button:has-text('Change')", "[class*='location'] a", "[class*='location'] button"]) {
-      if (changed) break;
-      try {
-        const el = page.locator(sel).first();
-        if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await el.click({ timeout: 5000 });
-          await page.waitForTimeout(1000);
-          for (const label of ['Worldwide', 'Any location', 'All locations']) {
-            try {
-              const ww = page.getByText(label, { exact: true }).first();
-              if (await ww.isVisible({ timeout: 3000 }).catch(() => false)) {
-                await ww.click({ timeout: 8000 });
-                try { await page.waitForLoadState('domcontentloaded', { timeout: 30000 }); } catch (e) {}
-                await page.waitForTimeout(3000);
-                console.log(`[WS] Location changed to Worldwide via "${sel}" → "${label}"`);
-                changed = true;
-                break;
-              }
-            } catch (e) {}
-          }
-        }
-      } catch (e) {}
-    }
-
-    // Strategy 2: location pill button in search bar header
-    if (!changed) {
-      try {
-        const pill = page.locator("button[aria-label*='location'], [data-testid*='location']").first();
-        if (await pill.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await pill.click({ timeout: 5000 });
-          await page.waitForTimeout(1000);
-          for (const label of ['Worldwide', 'Any location']) {
-            try {
-              const ww = page.getByText(label, { exact: true }).first();
-              if (await ww.isVisible({ timeout: 3000 }).catch(() => false)) {
-                await ww.click({ timeout: 8000 });
-                try { await page.waitForLoadState('domcontentloaded', { timeout: 30000 }); } catch (e) {}
-                await page.waitForTimeout(3000);
-                console.log('[WS] Location changed to Worldwide via location pill');
-                changed = true;
-                break;
-              }
-            } catch (e) {}
-          }
-        }
-      } catch (e) {}
-    }
-
-    if (!changed) {
-      console.log('[WS] Could not change location to Worldwide via UI — search URL uses "-" (worldwide) so results should still be global');
-    }
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(2000);
+    await _waitForPxClear(page, 8000);
+    console.log('[WS] Pre-batch warm-up complete');
   } catch (exc) {
-    console.log(`[WS] Could not prime worldwide location — ${exc.message}`);
+    console.log(`[WS] Pre-batch warm-up skipped — ${exc.message}`);
   }
 }
 
@@ -765,6 +697,33 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
     let html = await page.content();
     let text = (await page.evaluate(() => document.body.innerText)) || '';
     let actual_url = page.url() || search_url;
+
+    // ── Worldwide location enforcement ─────────────────────────────────────────
+    // Check the sidebar filter for the current location. If not "Worldwide", click
+    // the "Change" span which opens a location picker, then click "Worldwide" to
+    // update the session and reload the page with global prices.
+    // This runs on every wine (cheap when already Worldwide) so that reconnected
+    // users with a stale location cookie are fixed automatically.
+    try {
+      const addressText = await page.locator('.location-selected-container .address').first()
+        .textContent({ timeout: 2000 }).catch(() => null);
+      if (addressText && addressText.trim().toLowerCase() !== 'worldwide') {
+        console.log(`[WS] Location is "${addressText.trim()}" — changing to Worldwide on search page...`);
+        await page.locator('.change-location.js-location').first().click({ timeout: 4000 });
+        await page.waitForTimeout(1000);
+        const wwEl = page.getByText('Worldwide', { exact: true }).first();
+        await wwEl.waitFor({ state: 'visible', timeout: 5000 });
+        await wwEl.click({ timeout: 5000 });
+        try { await page.waitForLoadState('domcontentloaded', { timeout: 30000 }); } catch (e) {}
+        await page.waitForTimeout(2500);
+        html = await page.content();
+        text = (await page.evaluate(() => document.body.innerText)) || '';
+        actual_url = page.url() || search_url;
+        console.log('[WS] Location changed to Worldwide — re-read page for worldwide prices');
+      }
+    } catch (e) {
+      console.log(`[WS] Location check skipped (non-fatal): ${e.message}`);
+    }
 
     if (PX_SIGNALS.some(sig => (text + html).toLowerCase().includes(sig))) {
       console.log('[PX] Captcha detected during wine search — attempting behavioral solve...');
