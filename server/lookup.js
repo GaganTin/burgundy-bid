@@ -782,6 +782,7 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
     let html = await page.content();
     let text = (await page.evaluate(() => document.body.innerText)) || '';
     let actual_url = page.url() || search_url;
+    console.log(`[WS] Landed on: ${actual_url.slice(0, 120)}`);
 
     if (PX_SIGNALS.some(sig => (text + html).toLowerCase().includes(sig))) {
       console.log('[PX] Captcha detected during wine search — attempting behavioral solve...');
@@ -811,7 +812,11 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
     // ── Worldwide location enforcement ────────────────────────────────────────
     // Runs after PX is cleared so we act on the actual search results page.
     // Cheap no-op when location is already Worldwide.
+    // On success: reload search_url from scratch to get a clean worldwide page
+    // (in-page AJAX update after selecting Worldwide may not be sufficient).
     if (await _ensureWsWorldwide(page)) {
+      await page.goto(search_url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.waitForTimeout(2000);
       html = await page.content();
       text = (await page.evaluate(() => document.body.innerText)) || '';
       actual_url = page.url() || search_url;
