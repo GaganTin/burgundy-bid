@@ -876,29 +876,35 @@ async function _wsLoginAttempt(username, password, profileDir, proxyConfig = nul
   }
 }
 
-// Navigate to a WS search page and set location to Worldwide after login.
-// Opens the location modal, checks if the worldwide button already has the
-// "active" class, and if not clicks it + saves. Verifies the active class
-// is present after saving. Called after successful login.
+// Go to the WS homepage, open the location modal, ensure Worldwide is selected
+// and saved. Verifies the active class in the HTML after saving.
+// Called as the last step before saving cookies and closing the browser.
 async function _wsSetWorldwide(page) {
   try {
     const WS_BASE = 'https://www.wine-searcher.com';
-    await page.goto(`${WS_BASE}/find/-/any/-/-/ndbipe?Xtax_mode=e&shoptype=1%2C0`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+    // The location modal trigger lives in the homepage nav — go there directly.
+    await page.goto(WS_BASE, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(3000);
 
-    // Open the location modal
+    // Open the location modal via the nav bar trigger
     let modalOpened = false;
-    for (const sel of ['.change-location.js-location', 'span.js-location', '.filter-list__item span.js-location']) {
+    for (const sel of [
+      '.change-location.js-location',
+      'span.js-location',
+      '.js-location',
+    ]) {
       try {
         const el = page.locator(sel).first();
-        await el.waitFor({ state: 'visible', timeout: 3000 });
+        await el.waitFor({ state: 'visible', timeout: 4000 });
         await el.click({ timeout: 3000 });
         modalOpened = true;
+        console.log(`[WS] Login: opened location modal via "${sel}"`);
         break;
       } catch (e) { /* try next */ }
     }
     if (!modalOpened) {
-      console.log('[WS] Login: could not open location modal');
+      console.log('[WS] Login: could not open location modal on homepage');
       return;
     }
     await page.waitForTimeout(1000);
@@ -912,10 +918,11 @@ async function _wsSetWorldwide(page) {
     if (isActive) {
       console.log('[WS] Login: worldwide already active — closing modal');
       try { await page.keyboard.press('Escape'); } catch (e) {}
+      await page.waitForTimeout(500);
       return;
     }
 
-    // Click worldwide button to select it
+    // Click the worldwide button to select it
     console.log('[WS] Login: worldwide not active — selecting it...');
     try {
       await page.locator('.google-map__worldwide-button').first().click({ timeout: 3000 });
@@ -925,12 +932,12 @@ async function _wsSetWorldwide(page) {
     }
     await page.waitForTimeout(500);
 
-    // Click Save
+    // Click Save to commit the selection
     try {
       const saveBtn = page.locator('button.js-save-location').first();
       await saveBtn.waitFor({ state: 'visible', timeout: 3000 });
       await saveBtn.click({ timeout: 3000 });
-      console.log('[WS] Login: clicked Save');
+      console.log('[WS] Login: clicked Save — worldwide committed');
     } catch (e) {
       console.log(`[WS] Login: Save button not found — ${e.message}`);
       return;
@@ -940,7 +947,7 @@ async function _wsSetWorldwide(page) {
     try { await page.locator('.modal.show, .modal.fade.show').waitFor({ state: 'hidden', timeout: 8000 }); } catch (e) {}
     await page.waitForTimeout(2000);
 
-    // Verify active class is now set
+    // Verify active class is now present in the HTML
     const nowActive = await page.evaluate(() => {
       const btn = document.querySelector('.google-map__worldwide-button');
       return btn ? btn.classList.contains('active') : false;
