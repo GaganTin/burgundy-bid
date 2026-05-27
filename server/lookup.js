@@ -844,20 +844,25 @@ async function ct_get_wine_data(page, wine_url, size = '') {
 // any wine searches begin.
 async function _primeWsLocation(page) {
   try {
-    // Clear only location-preference cookies; keep auth cookies intact so the
-    // logged-in session remains valid for the modal interaction.
+    // Clear PX cookies (_px*) + location-preference cookies, but keep auth cookies.
+    // PX cookies in the persistent profile may be stale from a previous session;
+    // stale _px cookies cause an immediate PX challenge. Clearing them gives a
+    // fresh PX fingerprint state while preserving the logged-in WS session for
+    // the location modal interaction.
     const ctx = page.context();
     try {
       const allCookies = await ctx.cookies();
       const wsCookies = allCookies.filter(c => (c.domain || '').includes('wine-searcher'));
       console.log(`[WS] Pre-prime cookies: ${wsCookies.map(c => `${c.name}(${(c.value||'').slice(0,8)})`).join(', ')}`);
-      const locationCookies = ['ws_prof', 'ws_cart_idUS', 'ws_loc'];
-      const toRemove = wsCookies.filter(c => locationCookies.includes(c.name));
+      const toRemove = wsCookies.filter(c =>
+        c.name.startsWith('_px') ||
+        ['ws_prof', 'ws_cart_idUS', 'ws_loc'].includes(c.name)
+      );
       if (toRemove.length > 0) {
         const keep = allCookies.filter(c => !toRemove.some(r => r.name === c.name && r.domain === c.domain));
         await ctx.clearCookies();
         if (keep.length > 0) await ctx.addCookies(keep);
-        console.log(`[WS] Cleared location cookies: ${toRemove.map(c => c.name).join(', ')}`);
+        console.log(`[WS] Cleared PX+location cookies: ${toRemove.map(c => c.name).join(', ')}`);
       }
     } catch (e) {
       console.log(`[WS] Cookie clear skipped: ${e.message}`);
