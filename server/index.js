@@ -5609,10 +5609,22 @@ app.post('/admin/maintenance/run/:job', authMiddleware, adminMiddleware, async (
   try {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_renewal_date TIMESTAMP`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS credits_reset_date TIMESTAMP`);
-    // Unique constraint on transaction_id so ON CONFLICT (transaction_id) DO NOTHING works
+    // subscription_id was created as uuid but Stripe IDs (sub_xxx) are plain strings
+    await pool.query(`
+      DO $$
+      BEGIN
+        IF (SELECT data_type FROM information_schema.columns
+            WHERE table_name='users' AND column_name='subscription_id') = 'uuid' THEN
+          ALTER TABLE users ALTER COLUMN subscription_id TYPE TEXT USING subscription_id::TEXT;
+        END IF;
+      END $$
+    `);
+    // ON CONFLICT (transaction_id) requires a full (non-partial) unique index;
+    // replace any existing partial index with a full one
+    await pool.query(`DROP INDEX IF EXISTS users_payments_transaction_id_idx`);
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS users_payments_transaction_id_idx
-      ON users_payments(transaction_id) WHERE transaction_id IS NOT NULL
+      ON users_payments(transaction_id)
     `);
     // Rename "CellarTracker integration" → "Cellar Tracker integration" in all plan features
     await pool.query(`
