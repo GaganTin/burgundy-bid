@@ -877,78 +877,75 @@ async function _wsLoginAttempt(username, password, profileDir, proxyConfig = nul
 }
 
 // Navigate to a WS search page and set location to Worldwide after login.
-// Mirrors Python _prime_ws_location: detects non-worldwide by page text,
-// then uses text-based selectors rather than CSS classes.
-// Called after successful login so saved cookies carry worldwide preference.
+// Opens the location modal, checks if the worldwide button already has the
+// "active" class, and if not clicks it + saves. Verifies the active class
+// is present after saving. Called after successful login.
 async function _wsSetWorldwide(page) {
   try {
     const WS_BASE = 'https://www.wine-searcher.com';
-    await page.goto(`${WS_BASE}/find/-/any/-/-/ndbipe?Xtax_mode=e&shoptype=1%2C0`, { waitUntil: 'load', timeout: 60000 });
-    await page.waitForTimeout(4000);
+    await page.goto(`${WS_BASE}/find/-/any/-/-/ndbipe?Xtax_mode=e&shoptype=1%2C0`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(3000);
 
-    const inner = ((await page.evaluate(() => document.body.innerText).catch(() => '')) || '').toLowerCase();
+    // Open the location modal
+    let modalOpened = false;
+    for (const sel of ['.change-location.js-location', 'span.js-location', '.filter-list__item span.js-location']) {
+      try {
+        const el = page.locator(sel).first();
+        await el.waitFor({ state: 'visible', timeout: 3000 });
+        await el.click({ timeout: 3000 });
+        modalOpened = true;
+        break;
+      } catch (e) { /* try next */ }
+    }
+    if (!modalOpened) {
+      console.log('[WS] Login: could not open location modal');
+      return;
+    }
+    await page.waitForTimeout(1000);
 
-    const nonWorldwide = (inner.includes('searching products for') && !inner.slice(0, 4000).includes('worldwide'))
-      || ['hong kong', 'united states', 'australia', 'united kingdom'].some(c => inner.slice(0, 2000).includes(c));
+    // Check if worldwide button already has the "active" class
+    const isActive = await page.evaluate(() => {
+      const btn = document.querySelector('.google-map__worldwide-button');
+      return btn ? btn.classList.contains('active') : false;
+    }).catch(() => false);
 
-    if (!nonWorldwide) {
-      console.log('[WS] Login: location already Worldwide or undetected');
+    if (isActive) {
+      console.log('[WS] Login: worldwide already active — closing modal');
+      try { await page.keyboard.press('Escape'); } catch (e) {}
       return;
     }
 
-    console.log('[WS] Login: non-worldwide location detected — changing to Worldwide...');
-    let changed = false;
+    // Click worldwide button to select it
+    console.log('[WS] Login: worldwide not active — selecting it...');
+    try {
+      await page.locator('.google-map__worldwide-button').first().click({ timeout: 3000 });
+    } catch (e) {
+      console.log(`[WS] Login: could not click worldwide button — ${e.message}`);
+      return;
+    }
+    await page.waitForTimeout(500);
 
-    for (const sel of ["a:has-text('Change')", "button:has-text('Change')", "[class*='location'] a", "[class*='location'] button"]) {
-      if (changed) break;
-      try {
-        const el = page.locator(sel).first();
-        if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await el.click({ timeout: 5000 });
-          await page.waitForTimeout(1000);
-          for (const label of ['Worldwide', 'Any location', 'All locations']) {
-            try {
-              const ww = page.getByText(label, { exact: true }).first();
-              if (await ww.isVisible({ timeout: 3000 }).catch(() => false)) {
-                await ww.click({ timeout: 8000 });
-                try { await page.waitForLoadState('domcontentloaded', { timeout: 30000 }); } catch (e) {}
-                await page.waitForTimeout(3000);
-                console.log(`[WS] Login: location set to Worldwide via "${sel}" → "${label}"`);
-                changed = true;
-                break;
-              }
-            } catch (e) {}
-          }
-        }
-      } catch (e) {}
+    // Click Save
+    try {
+      const saveBtn = page.locator('button.js-save-location').first();
+      await saveBtn.waitFor({ state: 'visible', timeout: 3000 });
+      await saveBtn.click({ timeout: 3000 });
+      console.log('[WS] Login: clicked Save');
+    } catch (e) {
+      console.log(`[WS] Login: Save button not found — ${e.message}`);
+      return;
     }
 
-    if (!changed) {
-      try {
-        const pill = page.locator("button[aria-label*='location'], [data-testid*='location']").first();
-        if (await pill.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await pill.click({ timeout: 5000 });
-          await page.waitForTimeout(1000);
-          for (const label of ['Worldwide', 'Any location']) {
-            try {
-              const ww = page.getByText(label, { exact: true }).first();
-              if (await ww.isVisible({ timeout: 3000 }).catch(() => false)) {
-                await ww.click({ timeout: 8000 });
-                try { await page.waitForLoadState('domcontentloaded', { timeout: 30000 }); } catch (e) {}
-                await page.waitForTimeout(3000);
-                console.log('[WS] Login: location set to Worldwide via location pill');
-                changed = true;
-                break;
-              }
-            } catch (e) {}
-          }
-        }
-      } catch (e) {}
-    }
+    // Wait for modal to close
+    try { await page.locator('.modal.show, .modal.fade.show').waitFor({ state: 'hidden', timeout: 8000 }); } catch (e) {}
+    await page.waitForTimeout(2000);
 
-    if (!changed) {
-      console.log('[WS] Login: could not change location to Worldwide via UI');
-    }
+    // Verify active class is now set
+    const nowActive = await page.evaluate(() => {
+      const btn = document.querySelector('.google-map__worldwide-button');
+      return btn ? btn.classList.contains('active') : false;
+    }).catch(() => false);
+    console.log(`[WS] Login: worldwide active after save = ${nowActive}`);
   } catch (e) {
     console.log(`[WS] Login: could not set worldwide location — ${e.message}`);
   }
