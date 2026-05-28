@@ -367,72 +367,25 @@ function _unlockProfile(profileDir) {
 async function _ensureWsWorldwide(page) {
   const jitter = (base, spread) => base + Math.floor(Math.random() * spread);
   try {
-    // Step 1: On WS search result pages the location filter link is directly clickable.
-    // Step 2: Fallback — click the nav icon to open the popover, then click "Change location".
+    // Open the location modal
     let modalOpened = false;
-
-    // Direct click (works on search result pages with a visible location filter)
     for (const sel of ['.change-location.js-location', 'span.js-location', '.filter-list__item span.js-location']) {
       try {
         const el = page.locator(sel).first();
-        await el.waitFor({ state: 'visible', timeout: 2000 });
-        await el.click({ timeout: 2000 });
+        await el.waitFor({ state: 'visible', timeout: 3000 });
+        await el.click({ timeout: 3000 });
         modalOpened = true;
         console.log(`[WS] Opened location modal via "${sel}"`);
         break;
       } catch (e) { /* try next */ }
     }
-
-    // Icon → popover fallback (homepage / wine pages)
-    if (!modalOpened) {
-      let iconSel = null;
-      try {
-        await page.locator('svg.icon-logo-basic.icon-regions').first().click({ force: true, timeout: 3000 });
-        iconSel = 'svg.icon-logo-basic.icon-regions';
-      } catch (e) {
-        const result = await page.evaluate(() => {
-          const svg = document.querySelector('svg.icon-logo-basic.icon-regions');
-          if (!svg) return null;
-          const trigger = svg.closest('[data-toggle], [data-bs-toggle], a, button, [role="button"]') || svg.parentElement;
-          if (trigger) { trigger.click(); return trigger.className || trigger.tagName; }
-          svg.click();
-          return 'svg-direct';
-        }).catch(() => null);
-        if (result) iconSel = 'js-evaluate';
-      }
-      if (iconSel) {
-        console.log(`[WS] Clicked location icon via "${iconSel}"`);
-        await page.waitForTimeout(jitter(300, 150));
-
-        // Check popover text with short timeout — don't block if popover didn't open
-        const popoverText = await page.locator('.popover-body').innerText({ timeout: 1500 }).catch(() => '');
-        if (popoverText.toLowerCase().includes('worldwide')) {
-          console.log('[WS] Popover shows Worldwide — no modal needed');
-          try { await page.keyboard.press('Escape'); } catch (e) {}
-          await page.waitForTimeout(200);
-          return false;
-        }
-
-        for (const sel of ['span.change-location.js-location', '.change-location.js-location']) {
-          try {
-            const el = page.locator(sel).first();
-            await el.waitFor({ state: 'visible', timeout: 3000 });
-            await el.click({ timeout: 2000 });
-            modalOpened = true;
-            console.log(`[WS] Opened location modal via "${sel}"`);
-            break;
-          } catch (e) { /* try next */ }
-        }
-      }
-    }
-
     if (!modalOpened) {
       console.log('[WS] Could not open location modal');
       return false;
     }
     await page.waitForTimeout(jitter(400, 200));
 
-    // Step 4: Check active class; if not active click .js-toggle-worldwide span.
+    // Check if worldwide button already has the "active" class
     const isActive = await page.evaluate(() => {
       const btn = document.querySelector('.google-map__worldwide-button');
       return btn ? btn.classList.contains('active') : false;
@@ -445,22 +398,17 @@ async function _ensureWsWorldwide(page) {
       return false;
     }
 
+    // Click worldwide button to select it
     console.log('[WS] Worldwide not active — clicking it...');
     try {
-      const wwEl = page.locator('.js-toggle-worldwide[data-location="worldwide"]').first();
-      await wwEl.waitFor({ state: 'visible', timeout: 3000 });
-      await wwEl.click({ timeout: 3000 });
+      await page.locator('.google-map__worldwide-button').first().click({ timeout: 3000 });
     } catch (e) {
-      try {
-        await page.locator('.google-map__worldwide-button').first().click({ timeout: 3000 });
-      } catch (e2) {
-        console.log(`[WS] Could not click worldwide button: ${e2.message}`);
-        return false;
-      }
+      console.log(`[WS] Could not click worldwide button: ${e.message}`);
+      return false;
     }
     await page.waitForTimeout(jitter(200, 150));
 
-    // Step 5: Click Save.
+    // Click Save to commit the selection
     try {
       const saveBtn = page.locator('button.js-save-location').first();
       await saveBtn.waitFor({ state: 'visible', timeout: 3000 });
@@ -475,6 +423,7 @@ async function _ensureWsWorldwide(page) {
     try { await page.locator('.modal.show, .modal.fade.show').waitFor({ state: 'hidden', timeout: 8000 }); } catch (e) {}
     await page.waitForTimeout(jitter(500, 300));
 
+    // Verify active class is now set
     const nowActive = await page.evaluate(() => {
       const btn = document.querySelector('.google-map__worldwide-button');
       return btn ? btn.classList.contains('active') : false;
