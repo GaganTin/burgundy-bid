@@ -884,47 +884,37 @@ async function _wsSetWorldwide(page) {
     const WS_BASE = 'https://www.wine-searcher.com';
     const jitter = (base, spread) => base + Math.floor(Math.random() * spread);
 
-    // The nav bar has a regions icon. Clicking it opens a popover. Inside the popover
-    // is "Change location" — clicking that opens the full location modal.
-    // The "Change location" link is NOT visible until the icon popover is open.
-    // Try parent anchor/button first (actual click target); SVG selectors as fallback.
-    const ICON_SELS = [
-      'a:has(svg.icon-regions)',
-      'button:has(svg.icon-regions)',
-      '[data-toggle]:has(svg.icon-regions)',
-      '[data-bs-toggle]:has(svg.icon-regions)',
-      'svg.icon-logo-basic.icon-regions',
-      'svg.icon-regions:not([aria-hidden])',
-    ];
-
-    async function clickNavIcon() {
-      for (const sel of ICON_SELS) {
+    // Step 1: Click the nav bar location icon (svg.icon-logo-basic.icon-regions) to open the popover.
+    // The icon div has no <a>/<button> wrapper — click the SVG directly with force:true.
+    // JS evaluate fallback walks up the DOM to find any interactive ancestor.
+    async function clickLocIcon() {
+      for (const sel of ['svg.icon-logo-basic.icon-regions', 'svg.icon-logo-basic']) {
         try {
-          const el = page.locator(sel).first();
-          await el.waitFor({ state: 'visible', timeout: 2000 });
-          await el.click({ timeout: 2000 });
+          await page.locator(sel).first().click({ force: true, timeout: 3000 });
           return sel;
         } catch (e) { /* try next */ }
       }
-      // JS evaluate fallback: dispatch click on SVG's closest interactive ancestor.
-      const clicked = await page.evaluate(() => {
-        const svg = document.querySelector('svg.icon-regions');
-        if (!svg) return false;
-        const trigger = svg.closest('a, button, [data-toggle], [data-bs-toggle], [role="button"]') || svg.parentElement;
-        if (trigger) { trigger.click(); return true; }
-        return false;
-      }).catch(() => false);
-      return clicked ? 'js-evaluate' : null;
+      const result = await page.evaluate(() => {
+        const svg = document.querySelector('svg.icon-logo-basic.icon-regions')
+          || document.querySelector('svg.icon-logo-basic');
+        if (!svg) return null;
+        const trigger = svg.closest('[data-toggle], [data-bs-toggle], a, button, [role="button"]')
+          || svg.parentElement;
+        if (trigger) { trigger.click(); return trigger.className || trigger.tagName; }
+        svg.click();
+        return 'svg-direct';
+      }).catch(() => null);
+      return result ? 'js-evaluate' : null;
     }
 
-    // Try current page first; fall back to homepage if icon not found.
-    let iconSel = await clickNavIcon();
+    // Try current page first; navigate to homepage as fallback.
+    let iconSel = await clickLocIcon();
     if (!iconSel) {
       console.log('[WS] Login: location icon not found on current page — navigating to homepage');
       await page.goto(WS_BASE, { waitUntil: 'domcontentloaded', timeout: 60000 });
       try { await page.waitForLoadState('networkidle', { timeout: 6000 }); } catch (e) {}
       await page.waitForTimeout(jitter(800, 400));
-      iconSel = await clickNavIcon();
+      iconSel = await clickLocIcon();
     }
     if (!iconSel) {
       console.log('[WS] Login: could not click location icon');
@@ -933,7 +923,16 @@ async function _wsSetWorldwide(page) {
     console.log(`[WS] Login: clicked location icon via "${iconSel}"`);
     await page.waitForTimeout(jitter(300, 150)); // wait for popover to appear
 
-    // Click "Change location" in the popover to open the modal
+    // Step 2: Check the popover text. If it already says "Worldwide" we're done.
+    const popoverText = await page.locator('.popover-body').innerText().catch(() => '');
+    if (popoverText.toLowerCase().includes('worldwide')) {
+      console.log('[WS] Login: popover shows Worldwide — no modal needed');
+      try { await page.keyboard.press('Escape'); } catch (e) {}
+      await page.waitForTimeout(200);
+      return;
+    }
+
+    // Step 3: Click "Change location" in the popover to open the modal.
     let modalOpened = false;
     for (const sel of ['span.change-location.js-location', '.change-location.js-location']) {
       try {
@@ -945,14 +944,13 @@ async function _wsSetWorldwide(page) {
         break;
       } catch (e) { /* try next */ }
     }
-
     if (!modalOpened) {
       console.log('[WS] Login: could not open location modal');
       return;
     }
     await page.waitForTimeout(jitter(400, 200));
 
-    // Check if worldwide button already has the "active" class
+    // Step 4: Check active class; click .js-toggle-worldwide span if not active.
     const isActive = await page.evaluate(() => {
       const btn = document.querySelector('.google-map__worldwide-button');
       return btn ? btn.classList.contains('active') : false;
@@ -965,17 +963,25 @@ async function _wsSetWorldwide(page) {
       return;
     }
 
-    // Click the worldwide button to select it
     console.log('[WS] Login: worldwide not active — selecting it...');
     try {
-      await page.locator('.google-map__worldwide-button').first().click({ timeout: 3000 });
+      // Click the text span (.js-toggle-worldwide) inside the worldwide button
+      const wwSel = '.js-toggle-worldwide[data-location="worldwide"]';
+      const wwEl = page.locator(wwSel).first();
+      await wwEl.waitFor({ state: 'visible', timeout: 3000 });
+      await wwEl.click({ timeout: 3000 });
     } catch (e) {
-      console.log(`[WS] Login: could not click worldwide button — ${e.message}`);
-      return;
+      // Fallback: click the parent div
+      try {
+        await page.locator('.google-map__worldwide-button').first().click({ timeout: 3000 });
+      } catch (e2) {
+        console.log(`[WS] Login: could not click worldwide button — ${e2.message}`);
+        return;
+      }
     }
     await page.waitForTimeout(jitter(200, 150));
 
-    // Click Save to commit the selection
+    // Step 5: Click Save.
     try {
       const saveBtn = page.locator('button.js-save-location').first();
       await saveBtn.waitFor({ state: 'visible', timeout: 3000 });
@@ -986,11 +992,9 @@ async function _wsSetWorldwide(page) {
       return;
     }
 
-    // Wait for modal to close (event-driven; fixed wait is a short safety buffer)
     try { await page.locator('.modal.show, .modal.fade.show').waitFor({ state: 'hidden', timeout: 8000 }); } catch (e) {}
     await page.waitForTimeout(jitter(500, 300));
 
-    // Verify active class is now present in the HTML
     const nowActive = await page.evaluate(() => {
       const btn = document.querySelector('.google-map__worldwide-button');
       return btn ? btn.classList.contains('active') : false;
