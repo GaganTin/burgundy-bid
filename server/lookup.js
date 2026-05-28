@@ -368,23 +368,42 @@ async function _ensureWsWorldwide(page) {
   const jitter = (base, spread) => base + Math.floor(Math.random() * spread);
   try {
     // Step 1: Click the nav bar location icon to open the popover.
-    // The "Change location" link lives inside that popover — it's not visible until the icon is clicked.
-    const ICON_SELS = ['svg.icon-logo-basic.icon-regions', 'svg.icon-regions:not([aria-hidden])'];
-    let iconClicked = false;
+    // The "Change location" link lives inside that popover — not visible until the icon is clicked.
+    // The actual click target is the parent anchor/button, not the SVG itself.
+    const ICON_SELS = [
+      'a:has(svg.icon-regions)',
+      'button:has(svg.icon-regions)',
+      '[data-toggle]:has(svg.icon-regions)',
+      '[data-bs-toggle]:has(svg.icon-regions)',
+      'svg.icon-logo-basic.icon-regions',
+      'svg.icon-regions:not([aria-hidden])',
+    ];
+    let iconSel = null;
     for (const sel of ICON_SELS) {
       try {
         const el = page.locator(sel).first();
         await el.waitFor({ state: 'visible', timeout: 2000 });
         await el.click({ timeout: 2000 });
-        iconClicked = true;
-        console.log(`[WS] Clicked location icon via "${sel}"`);
+        iconSel = sel;
         break;
       } catch (e) { /* try next */ }
     }
-    if (!iconClicked) {
+    if (!iconSel) {
+      // JS evaluate fallback: dispatch click on SVG's closest interactive ancestor.
+      const clicked = await page.evaluate(() => {
+        const svg = document.querySelector('svg.icon-regions');
+        if (!svg) return false;
+        const trigger = svg.closest('a, button, [data-toggle], [data-bs-toggle], [role="button"]') || svg.parentElement;
+        if (trigger) { trigger.click(); return true; }
+        return false;
+      }).catch(() => false);
+      if (clicked) iconSel = 'js-evaluate';
+    }
+    if (!iconSel) {
       console.log('[WS] Could not click location icon — skipping worldwide check');
       return false;
     }
+    console.log(`[WS] Clicked location icon via "${iconSel}"`);
     await page.waitForTimeout(jitter(300, 150)); // wait for popover to appear
 
     // Step 2: Click "Change location" in the popover to open the modal

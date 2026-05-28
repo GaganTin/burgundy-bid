@@ -887,7 +887,15 @@ async function _wsSetWorldwide(page) {
     // The nav bar has a regions icon. Clicking it opens a popover. Inside the popover
     // is "Change location" — clicking that opens the full location modal.
     // The "Change location" link is NOT visible until the icon popover is open.
-    const ICON_SELS = ['svg.icon-logo-basic.icon-regions', 'svg.icon-regions:not([aria-hidden])'];
+    // Try parent anchor/button first (actual click target); SVG selectors as fallback.
+    const ICON_SELS = [
+      'a:has(svg.icon-regions)',
+      'button:has(svg.icon-regions)',
+      '[data-toggle]:has(svg.icon-regions)',
+      '[data-bs-toggle]:has(svg.icon-regions)',
+      'svg.icon-logo-basic.icon-regions',
+      'svg.icon-regions:not([aria-hidden])',
+    ];
 
     async function clickNavIcon() {
       for (const sel of ICON_SELS) {
@@ -895,25 +903,34 @@ async function _wsSetWorldwide(page) {
           const el = page.locator(sel).first();
           await el.waitFor({ state: 'visible', timeout: 2000 });
           await el.click({ timeout: 2000 });
-          return true;
+          return sel;
         } catch (e) { /* try next */ }
       }
-      return false;
+      // JS evaluate fallback: dispatch click on SVG's closest interactive ancestor.
+      const clicked = await page.evaluate(() => {
+        const svg = document.querySelector('svg.icon-regions');
+        if (!svg) return false;
+        const trigger = svg.closest('a, button, [data-toggle], [data-bs-toggle], [role="button"]') || svg.parentElement;
+        if (trigger) { trigger.click(); return true; }
+        return false;
+      }).catch(() => false);
+      return clicked ? 'js-evaluate' : null;
     }
 
     // Try current page first; fall back to homepage if icon not found.
-    let iconClicked = await clickNavIcon();
-    if (!iconClicked) {
+    let iconSel = await clickNavIcon();
+    if (!iconSel) {
       console.log('[WS] Login: location icon not found on current page — navigating to homepage');
       await page.goto(WS_BASE, { waitUntil: 'domcontentloaded', timeout: 60000 });
       try { await page.waitForLoadState('networkidle', { timeout: 6000 }); } catch (e) {}
       await page.waitForTimeout(jitter(800, 400));
-      iconClicked = await clickNavIcon();
+      iconSel = await clickNavIcon();
     }
-    if (!iconClicked) {
+    if (!iconSel) {
       console.log('[WS] Login: could not click location icon');
       return;
     }
+    console.log(`[WS] Login: clicked location icon via "${iconSel}"`);
     await page.waitForTimeout(jitter(300, 150)); // wait for popover to appear
 
     // Click "Change location" in the popover to open the modal
