@@ -72,9 +72,9 @@ function CollapsibleBatch({ label, wines, onClear, onUpdateOfferPrice, onUpdateO
 export default function BatchHistorySection({ batches, onClearBatch, onClearAll, onUpdateOfferPrice, onUpdateOfferCurrency, onUpdateCtCurrency, onDeleteRow, latestBatchId, prefix = 'full' }) {
   if (!batches || batches.length === 0) return null;
 
-  // Today's batches (merged into one group)
+  // Today's batches (merged into one group, oldest-first so search order is preserved)
   const todayBatches = batches.filter(b => isToday(new Date(b.date)));
-  const todayWines = todayBatches.flatMap(b => b.wines);
+  const todayWines = [...todayBatches].sort((a, b) => new Date(a.date) - new Date(b.date)).flatMap(b => b.wines);
 
   // This month but NOT today
   const thisMonthNotToday = batches.filter(b => isThisMonth(new Date(b.date)) && !isToday(new Date(b.date)));
@@ -129,7 +129,7 @@ export default function BatchHistorySection({ batches, onClearBatch, onClearAll,
 
         {/* This month (not today) — grouped by Month-Year */}
         {thisMonthNotToday.length > 0 && (() => {
-          const allWines = thisMonthNotToday.flatMap(b => b.wines);
+          const allWines = [...thisMonthNotToday].sort((a, b) => new Date(a.date) - new Date(b.date)).flatMap(b => b.wines);
           const label = format(new Date(thisMonthNotToday[0].date), "MMMM yyyy");
           const filename = `${prefix}_${label.replace(/\s+/g, '_')}.csv`;
           return (
@@ -153,7 +153,7 @@ export default function BatchHistorySection({ batches, onClearBatch, onClearAll,
         {/* Older months grouped by Month-Year */}
         {sortedMonthKeys.map(monthKey => {
           const monthBatches = olderByMonth[monthKey];
-          const allWines = monthBatches.flatMap(b => b.wines);
+          const allWines = [...monthBatches].sort((a, b) => new Date(a.date) - new Date(b.date)).flatMap(b => b.wines);
           const filename = `${prefix}_${monthKey.replace(/\s+/g, '_')}.csv`;
           return (
             <CollapsibleBatch

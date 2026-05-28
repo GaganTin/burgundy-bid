@@ -365,6 +365,7 @@ function _unlockProfile(profileDir) {
 // class, and if not click it and save. Verifies active class after saving.
 // Returns true if a change was made.
 async function _ensureWsWorldwide(page) {
+  const jitter = (base, spread) => base + Math.floor(Math.random() * spread);
   try {
     // Open the location modal
     let modalOpened = false;
@@ -382,7 +383,7 @@ async function _ensureWsWorldwide(page) {
       console.log('[WS] Could not open location modal');
       return false;
     }
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(jitter(400, 200));
 
     // Check if worldwide button already has the "active" class
     const isActive = await page.evaluate(() => {
@@ -393,7 +394,7 @@ async function _ensureWsWorldwide(page) {
     if (isActive) {
       console.log('[WS] Worldwide already active — closing modal');
       try { await page.keyboard.press('Escape'); } catch (e) {}
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
       return false;
     }
 
@@ -405,7 +406,7 @@ async function _ensureWsWorldwide(page) {
       console.log(`[WS] Could not click worldwide button: ${e.message}`);
       return false;
     }
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(jitter(200, 150));
 
     // Click Save to commit the selection
     try {
@@ -418,9 +419,9 @@ async function _ensureWsWorldwide(page) {
       return false;
     }
 
-    // Wait for modal to close
+    // Wait for modal to close (event-driven; fixed wait is a short safety buffer)
     try { await page.locator('.modal.show, .modal.fade.show').waitFor({ state: 'hidden', timeout: 8000 }); } catch (e) {}
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(jitter(500, 300));
 
     // Verify active class is now set
     const nowActive = await page.evaluate(() => {
@@ -510,6 +511,21 @@ function _stripAccents(text) {
   return (text || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
 }
 
+// Bag-of-characters similarity ratio (approximates Python SequenceMatcher.ratio()).
+// Returns 0\u20131; used as a tiebreaker in token-aware scoring.
+function _simRatio(a, b) {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  const bMap = new Map();
+  for (const c of b) bMap.set(c, (bMap.get(c) || 0) + 1);
+  let matches = 0;
+  for (const c of a) {
+    const n = bMap.get(c) || 0;
+    if (n > 0) { matches++; bMap.set(c, n - 1); }
+  }
+  return 2 * matches / (a.length + b.length);
+}
+
 // Infer bottle size from a CT search result label (e.g. "2015 Salon … Magnum")
 function _extractCtSize(label) {
   for (const [pattern, size] of _CT_SIZE_RULES) {
@@ -528,6 +544,68 @@ function _sizeToWsVolume(size) {
   if (!size) return null;
   const vol = _WS_VOLUME_MAP[_normalizeBottleSize(size)];
   return (vol && vol !== 750) ? vol : null;
+}
+
+// ── WS autocomplete helpers ───────────────────────────────────────────────────
+
+// Generic wine/appellation words that appear in almost every entry and don't
+// help disambiguate cuvées.  Kept separate from meaningful descriptors
+// (brut, blanc, sec, rosé) that DO distinguish products.
+const _WS_MATCH_STOPWORDS = new Set([
+  'champagne', 'grand', 'cru', '1er', 'premier',
+  'the', 'a', 'an', 'au', 'aux', 'le', 'la', 'les',
+  'du', 'des', 'de', 'd', 'et', 'sur',
+]);
+
+// Query WS's uni-search autocomplete endpoint and return up to `limit` product matches.
+// Response entries have: swd (display name), link (URL slug for /find/), type, i (wine ID).
+async function _wsAutocomplete(wsPage, query, limit = 10) {
+  if (!query) return [];
+  const url = `${WS_BASE}/ajax/ng/csearch/uni-search?q=1&p=1&c=wine&k=${encodeURIComponent(query)}&v=`;
+  try {
+    const raw = await wsPage.evaluate(async (u) => {
+      const r = await fetch(u, {
+        credentials: 'include',
+        headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json, text/plain, */*' },
+      });
+      return await r.text();
+    }, url) || '';
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data)) return [];
+    return data.filter(e => e && typeof e === 'object' && e.type === 'product').slice(0, limit);
+  } catch (e) {
+    console.log(`[WS autocomplete] Failed for "${query}": ${e.message}`);
+    return [];
+  }
+}
+
+// Token-aware best-match picker over WS autocomplete results.
+// Counts only DISTINCTIVE input tokens (strips stopwords) — common appellation
+// words like "champagne" and "grand cru" match every entry and skew the score.
+// Ties are broken by WS's own relevance ordering (first returned = highest confidence).
+function _pickBestWsMatch(query, results) {
+  if (!results || !results.length) return null;
+  if (results.length === 1) return results[0];
+  const q = _stripAccents(query).toLowerCase();
+  const allTokens   = q.split(/[\s'"]+/).filter(Boolean);
+  const distinctive = allTokens.filter(t => !_WS_MATCH_STOPWORDS.has(t));
+  const scoring     = distinctive.length ? distinctive : allTokens;
+
+  function score(entry) {
+    const target = _stripAccents(entry.swd || '').toLowerCase();
+    const tok    = scoring.filter(t => target.includes(t)).length;
+    const ratio  = _simRatio(q, target);
+    return [tok, ratio, -target.length];
+  }
+
+  return results.reduce((best, entry) => {
+    const [bt, br, bl] = score(best);
+    const [et, er, el] = score(entry);
+    if (et > bt) return entry;
+    if (et === bt && er > br) return entry;
+    if (et === bt && er === br && el > bl) return entry;
+    return best;
+  });
 }
 
 // From a list of [sizeHint, url] pairs for one vintage, pick the URL matching requested size.
@@ -765,11 +843,14 @@ async function _primeWsLocation(page) {
   }
 }
 
-async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions = true) {
-  const result = { ws_matched: null, ws_wine_url: null, ws_avg: null, ws_min: null, ws_error: null };
+async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions = true, skipWorldwideCheck = false) {
+  const result = { ws_matched: null, ws_wine_url: null, ws_avg: null, ws_min: null, ws_error: null, ws_no_results: false };
   try {
     await page.goto(search_url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForTimeout(2000 + Math.random() * 1500);
+    // Wait for JS to settle (networkidle, capped) then add a human-like buffer.
+    // networkidle fires as soon as the page goes quiet so we don't over-sleep on fast loads.
+    try { await page.waitForLoadState('networkidle', { timeout: 4000 }); } catch (e) {}
+    await page.waitForTimeout(1000 + Math.random() * 800);
     await _waitForPxClear(page, 10000);
 
     let html = await page.content();
@@ -803,9 +884,9 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
     }
 
     // ── Worldwide location enforcement ────────────────────────────────────────
-    // Runs after PX is cleared so we act on the actual search results page.
-    // On success: reload() to get fresh worldwide prices.
-    if (await _ensureWsWorldwide(page)) {
+    // Skipped when caller already confirmed worldwide at batch start (_primeWsLocation).
+    // Only runs when skipWorldwideCheck=false (e.g. after a PX captcha wipe reset session).
+    if (!skipWorldwideCheck && await _ensureWsWorldwide(page)) {
       try { await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }); } catch (e) {}
       await page.waitForTimeout(2000);
       html = await page.content();
@@ -821,9 +902,12 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
       console.log(`[WS diag] Page text 400-800:\n${snippet2}`);
     } catch (e) {}
 
-    // Detect WS "no results" page before trying to parse prices
-    const lowerText = text.toLowerCase();
-    const isNoResults = /could not find any products|no results found|no wines found/i.test(text) ||
+    // Detect WS "no results" page before trying to parse prices.
+    // isHardNoResults = WS has zero matches for this name at any vintage (skip vintage fallbacks).
+    const lowerText      = text.toLowerCase();
+    const isHardNoResults = /could not find any products/i.test(text);
+    const isNoResults    = isHardNoResults ||
+      /no results found|no wines found/i.test(text) ||
       (lowerText.includes('showing results for') && !lowerText.includes('avg price'));
 
     if (isNoResults) {
@@ -836,22 +920,24 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
       if (foundHref) {
         try {
           // Rebuild URL: replace the name segment, keep vintage + trailing params intact.
-          const urlObj   = new URL(search_url);
-          const suffix   = urlObj.pathname.split('/').slice(3).join('/'); // e.g. "any/-/Xcurrencycode=..."
+          const urlObj      = new URL(search_url);
+          const suffix      = urlObj.pathname.split('/').slice(3).join('/');
           const redirectUrl = `${WS_BASE}${foundHref}/${suffix}${urlObj.search}`;
           console.log(`[WS carousel] No exact match — following carousel link: ${foundHref}`);
           await page.goto(redirectUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
           await page.waitForTimeout(2000 + Math.random() * 1000);
-          html = await page.content();
-          text = (await page.evaluate(() => document.body.innerText)) || '';
+          html       = await page.content();
+          text       = (await page.evaluate(() => document.body.innerText)) || '';
           actual_url = page.url() || redirectUrl;
           // Fall through to normal price extraction below
         } catch (e) {
           console.log(`[WS carousel] Redirect failed: ${e.message}`);
+          if (isHardNoResults) result.ws_no_results = true;
           result.ws_error = 'Wine-Searcher: wine not found — try adjusting the name or vintage';
           return result;
         }
       } else {
+        if (isHardNoResults) result.ws_no_results = true;
         result.ws_error = 'Wine-Searcher: wine not found — try adjusting the name or vintage';
         return result;
       }
@@ -975,10 +1061,9 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
       if (mm) ws_min = _roundPrice('$' + mm[1]);
     }
 
-    if (avg_price) result.ws_avg = _roundPrice(avg_price);
-    if (ws_min)    result.ws_min = ws_min;
-
-    if (avg_price || ws_min) {
+    if (avg_price) {
+      result.ws_avg = _roundPrice(avg_price);
+      if (ws_min) result.ws_min = ws_min;
       result.ws_wine_url = actual_url;
       // Wine name from <h1> or first meaningful line of rendered text
       const h1 = await page.$('h1');
@@ -1062,34 +1147,79 @@ function _wsIsNotFound(r) {
     /wine not found|no results found|no wines found/i.test(r.ws_error);
 }
 
-// Wraps ws_get_wine_data with progressive name-trimming fallback.
-// Tries the original name first; if WS says "not found" AND the name has > 4
-// parts, retries with front-trimmed then back-trimmed name variants.
-async function _wsLookupWithFallback(wsPage, name, vintage, wsCurrency, size) {
-  function buildUrl(n) {
-    const nameEnc = encodeURIComponent(n).replace(/%20/g, '+');
-    const vtg     = vintage || 'any';
-    const curr    = (wsCurrency || 'USD').toUpperCase();
-    const wsVol   = _sizeToWsVolume(size);
-    let url = `${WS_BASE}/find/${nameEnc}/${vtg}/-/${curr}/ndbipe?Xtax_mode=e&shoptype=1%2C0&Xsavecurrency=Y&Xsavelocation=Y`;
+// Wraps ws_get_wine_data with:
+//   1. WS autocomplete slug resolution (one in-page fetch, cached in wsSlugCache)
+//   2. Vintage fallback loop (±1, ±2 years) when wine exists but exact vintage unprice
+//   3. Progressive name-trimming fallback when wine name has no WS match at all
+async function _wsLookupWithFallback(wsPage, name, vintage, wsCurrency, size, wsSlugCache, wsWorldwideOk = false) {
+  // Resolve canonical WS slug via autocomplete (cached per wine name across the batch).
+  // The slug is the URL-ready identifier WS uses in /find/<slug>/<vintage>/... and
+  // handles accents, appellation suffixes, quotes, and "Grand Cru" insertions that
+  // cause a literal URL-encoded name to return zero results.
+  let searchSlug = null;
+  if (wsSlugCache) {
+    const cacheKey = (name || '').trim().toLowerCase();
+    if (!wsSlugCache.has(cacheKey)) {
+      const matches = await _wsAutocomplete(wsPage, name);
+      const best    = _pickBestWsMatch(name, matches);
+      wsSlugCache.set(cacheKey, (best && best.link) ? best.link : null);
+      if (best && best.link) {
+        console.log(`[WS autocomplete] "${name}" → slug "${best.link}" (${best.swd || ''})`);
+      } else {
+        console.log(`[WS autocomplete] No match for "${name}" — using literal name`);
+      }
+    }
+    searchSlug = wsSlugCache.get(cacheKey) || null;
+  }
+
+  function buildUrl(n, vtg, slug) {
+    const nameSlug = slug || encodeURIComponent(n).replace(/%20/g, '+');
+    const vtgStr   = vtg || 'any';
+    const curr     = (wsCurrency || 'USD').toUpperCase();
+    const wsVol    = _sizeToWsVolume(size);
+    let url = `${WS_BASE}/find/${nameSlug}/${vtgStr}/-/${curr}/ndbipe?Xtax_mode=e&shoptype=1%2C0&Xsavecurrency=Y&Xsavelocation=Y`;
     if (wsVol) url += `&volume=${wsVol}`;
     return url;
   }
 
-  const r0 = await ws_get_wine_data(wsPage, buildUrl(name), size);
-  if (!_wsIsNotFound(r0)) return r0;
+  const r0 = await ws_get_wine_data(wsPage, buildUrl(name, vintage, searchSlug), size, true, wsWorldwideOk);
 
-  const fallbacks = _wsFallbackNames(name);
-  if (!fallbacks.length) return r0; // ≤4 parts, no fallback
-
-  for (const shorter of fallbacks) {
-    await wsPage.waitForTimeout(800 + Math.random() * 700);
-    console.log(`[WS fallback] "${name}" not found — retrying as "${shorter}"`);
-    const r = await ws_get_wine_data(wsPage, buildUrl(shorter), size);
-    if (!_wsIsNotFound(r)) return r;
+  // ── Vintage fallback: wine found on WS but no price for this exact vintage ──
+  // Skip when: WS said "could not find any products" (ws_no_results = wine doesn't exist),
+  // or when we already got a price, or when vintage isn't a 4-digit year.
+  if (!r0.ws_avg && !r0.ws_min && !r0.ws_no_results && !_wsIsNotFound(r0)
+      && vintage && /^\d{4}$/.test(vintage)) {
+    const yr          = parseInt(vintage, 10);
+    const maxAltYear  = new Date().getFullYear() - 1;
+    for (const delta of [-1, -2, 1, 2]) {
+      const altYr = yr + delta;
+      if (altYr > maxAltYear) continue;
+      await wsPage.waitForTimeout(500 + Math.random() * 500);
+      console.log(`[WS vintage fallback] "${name}" ${vintage} → trying ${altYr}`);
+      const altR = await ws_get_wine_data(wsPage, buildUrl(name, String(altYr), searchSlug), size, true, wsWorldwideOk);
+      if (altR.ws_avg || altR.ws_min) {
+        altR.ws_vintage_fallback = String(altYr);
+        return altR;
+      }
+      if (altR.ws_no_results) return altR; // wine itself has zero WS entries — stop early
+    }
+    return r0; // vintage fallback exhausted
   }
 
-  return r0; // all variants exhausted, return original "not found"
+  // ── Name-trimming fallback: wine name not found on WS even with autocomplete ──
+  if (_wsIsNotFound(r0)) {
+    const fallbacks = _wsFallbackNames(name);
+    if (!fallbacks.length) return r0;
+    for (const shorter of fallbacks) {
+      await wsPage.waitForTimeout(800 + Math.random() * 700);
+      console.log(`[WS name fallback] "${name}" not found — retrying as "${shorter}"`);
+      // Don't use autocomplete slug for trimmed names (different search term)
+      const r = await ws_get_wine_data(wsPage, buildUrl(shorter, vintage, null), size, true, wsWorldwideOk);
+      if (!_wsIsNotFound(r)) return r;
+    }
+  }
+
+  return r0;
 }
 
 // ── CT progressive name-trimming fallback ────────────────────────────────────
@@ -1164,15 +1294,35 @@ async function _doCtLookup(ctPage, name, vintage, size) {
     if (!acEntries.length) {
       ct_err = `Cellar Tracker: autocomplete returned nothing for '${acName}'`;
     } else {
-      // Pick best canonical name: prefer entry whose name contains our query
-      const acNameLower = acName.toLowerCase();
-      let canonical = acEntries[0];
-      for (const entry of acEntries) {
-        if (_stripAccents(entry).toLowerCase().includes(acNameLower)) {
-          canonical = entry;
-          break;
-        }
+      // Token-aware canonical selection (mirrors Python scraper.py _score logic).
+      // 1. Strip leading vintage/NV marker from both input and candidate so "2016 Salon"
+      //    and "N.V. Salon" don't pollute the token comparison.
+      // 2. Count how many input tokens appear (as substrings) in the candidate —
+      //    this discriminates cuvée names far better than pure character ratio.
+      // 3. Tiebreak by character-level similarity ratio, then prefer shorter entry.
+      function _ctNormalise(s) {
+        return _stripAccents(s).toLowerCase().replace(/^(n\.?v\.?|mv|\d{4})\s+/i, '');
       }
+      const acNameNorm  = _ctNormalise(acName);
+      const inputTokens = acNameNorm.split(/\s+/).filter(Boolean);
+
+      function _ctScore(entry) {
+        const entNorm     = _ctNormalise(entry);
+        const tokenHits   = inputTokens.filter(t => entNorm.includes(t)).length;
+        const ratio       = _simRatio(acNameNorm, entNorm);
+        return [tokenHits, ratio, -entNorm.length];
+      }
+
+      const canonical = acEntries.reduce((best, entry) => {
+        const [bt, br, bl] = _ctScore(best);
+        const [et, er, el] = _ctScore(entry);
+        if (et > bt) return entry;
+        if (et === bt && er > br) return entry;
+        if (et === bt && er === br && el > bl) return entry;
+        return best;
+      });
+      console.log(`[CT] autocomplete: '${acName}' → '${canonical}' (of ${acEntries.length})`);
+
 
       // Fetch search.asp using in-page fetch (preserves windows-1252 charset + cookies).
       // CT classic search.asp requires ASCII (Latin-1) URL encoding — UTF-8 returns 0 results.
@@ -1198,33 +1348,57 @@ async function _doCtLookup(ctPage, name, vintage, size) {
         const clean = href.replace(/^(\.\.\/)+/, '');
         const full = clean.startsWith('http') ? clean : CT_BASE + '/' + clean.replace(/^\//, '');
         const mYear = label.match(/^(\d{4})\s+/);
+        const mNv   = !mYear ? label.match(/^(N\.?V\.?|MV)\s+/i) : null;
         if (mYear) {
           const yr = mYear[1];
           const sizeHint = _extractCtSize(label);
           if (!vintage_map[yr]) vintage_map[yr] = [];
           vintage_map[yr].push([sizeHint, full]);
+        } else if (mNv) {
+          // Normalise all non-vintage markers (N.V., NV, MV) to a single "NV" key
+          const sizeHint = _extractCtSize(label);
+          if (!vintage_map['NV']) vintage_map['NV'] = [];
+          vintage_map['NV'].push([sizeHint, full]);
         } else if (!group_url && label) {
           group_url = full;
         }
       }
 
-      // Vintage selection (mirrors Python logic exactly)
-      const vintageKeys = Object.keys(vintage_map);
-      if (vintage && vintage_map[vintage]) {
-        ct_url = _bestCtUrlForSize(vintage_map[vintage], size);
-        ct_matched = `${vintage} ${canonical}`;
-      } else if (vintage && vintageKeys.length) {
-        const nearest = vintageKeys.reduce((a, b) =>
-          Math.abs(parseInt(a) - parseInt(vintage)) <= Math.abs(parseInt(b) - parseInt(vintage)) ? a : b
+      // Vintage selection — handles numeric years AND non-vintage (NV) entries.
+      // Normalise: "N.V.", "n.v.", "MV" → "NV" to match the key we store above.
+      const reqVintage    = (vintage && /^(N\.?V\.?|MV)$/i.test(vintage.trim())) ? 'NV' : vintage;
+      const reqIsNumeric  = reqVintage && /^\d{4}$/.test(reqVintage);
+      const vintageKeys   = Object.keys(vintage_map);
+      const numericKeys   = vintageKeys.filter(k => /^\d{4}$/.test(k));
+
+      if (reqVintage && vintage_map[reqVintage]) {
+        // Exact match (works for "2020", "NV", etc.)
+        ct_url     = _bestCtUrlForSize(vintage_map[reqVintage], size);
+        const pfx  = reqVintage === 'NV' ? 'N.V.' : reqVintage;
+        ct_matched = `${pfx} ${canonical}`;
+      } else if (reqIsNumeric && numericKeys.length) {
+        // Numeric vintage requested but not in map → nearest available year
+        const nearest = numericKeys.reduce((a, b) =>
+          Math.abs(parseInt(a) - parseInt(reqVintage)) <= Math.abs(parseInt(b) - parseInt(reqVintage)) ? a : b
         );
-        ct_url = _bestCtUrlForSize(vintage_map[nearest], size);
+        ct_url     = _bestCtUrlForSize(vintage_map[nearest], size);
         ct_matched = `${nearest} ${canonical}`;
-      } else if (!vintage && vintageKeys.length) {
-        const latest = vintageKeys.sort().reverse()[0];
-        ct_url = _bestCtUrlForSize(vintage_map[latest], size);
+      } else if (reqVintage && !reqIsNumeric) {
+        // Non-vintage requested but no NV entry — never substitute a numeric year;
+        // use the wine-group page as the only honest fallback.
+        if (group_url) {
+          ct_url     = group_url;
+          ct_matched = canonical;
+        } else {
+          ct_err = `Cellar Tracker: no non-vintage entry for '${canonical}'`;
+        }
+      } else if (!reqVintage && numericKeys.length) {
+        // No vintage supplied — pick the latest available year
+        const latest = numericKeys.sort((a, b) => parseInt(b) - parseInt(a))[0];
+        ct_url     = _bestCtUrlForSize(vintage_map[latest], size);
         ct_matched = `${latest} ${canonical}`;
       } else if (group_url) {
-        ct_url = group_url;
+        ct_url     = group_url;
         ct_matched = canonical;
       } else {
         ct_err = `Cellar Tracker: no results for '${canonical}'`;
@@ -1254,6 +1428,7 @@ async function runLookupForBatch(batchId, logger = () => {}, options = {}) {
   // Used to surface a clear per-wine error instead of silently scraping unauthenticated.
   let ctSessionMissing = false;
   let wsSessionMissing = false;
+  let wsWorldwideConfirmed = false; // set after _primeWsLocation; skips per-wine modal check
 
   let _semAcquired = false;
   try {
@@ -1630,7 +1805,10 @@ async function runLookupForBatch(batchId, logger = () => {}, options = {}) {
       } catch (e) {
         console.log('[WS] Pre-lookup auth check error (non-fatal):', e.message);
       }
-      if (wsPage) await _primeWsLocation(wsPage).catch(e => console.log('[WS] Location prime error (non-fatal):', e.message));
+      if (wsPage) {
+        await _primeWsLocation(wsPage).catch(e => console.log('[WS] Location prime error (non-fatal):', e.message));
+        wsWorldwideConfirmed = true; // skip per-wine modal check for this batch
+      }
     } else {
       console.log(`Skipping Wine Searcher browser (connected=${wsConnected} enabled=${wsEnabled})`);
     }
@@ -1638,6 +1816,9 @@ async function runLookupForBatch(batchId, logger = () => {}, options = {}) {
     // ── Process each wine in the batch ─────────────────────────────────────
     logger('Now looking up:');
     let ctPaywalled = false; // set on first CT paywall hit — skips CT for remaining wines
+    // Per-batch WS autocomplete slug cache: one in-page fetch per unique wine name,
+    // reused across multiple vintages of the same wine in this batch.
+    const wsSlugCache = new Map();
     for (let i = 0; i < records.length; i++) {
       const rec = records[i];
       // Human-like pacing between wines (reduced from 1–3s to 0.5–1.2s)
@@ -1678,7 +1859,7 @@ async function runLookupForBatch(batchId, logger = () => {}, options = {}) {
         const wsPromise = (wsConnected && wsEnabled && wsPage)
           ? (wsCached
               ? (console.log(`[cache] WS hit for "${name}"`), Promise.resolve(wsCached))
-              : _wsLookupWithFallback(wsPage, name, vintage, wsCurrency, size).then(r => {
+              : _wsLookupWithFallback(wsPage, name, vintage, wsCurrency, size, wsSlugCache, wsWorldwideConfirmed).then(r => {
                   // Don't cache session-expired / blocked errors — user may reconnect.
                   if (!r.ws_error || !/session expired|blocked|page load error/i.test(r.ws_error))
                     _cacheSet(_wsCache, userId, wsSearchUrl, r, _WS_TTL);
@@ -1738,7 +1919,7 @@ async function runLookupForBatch(batchId, logger = () => {}, options = {}) {
             const wsPages2 = wsContext.pages();
             wsPage = wsPages2.length > 0 ? wsPages2[0] : await wsContext.newPage();
 
-            ws_data = await _wsLookupWithFallback(wsPage, name, vintage, wsCurrency, size);
+            ws_data = await _wsLookupWithFallback(wsPage, name, vintage, wsCurrency, size, wsSlugCache, false);
 
             // Wipe+retry cleared PX — save fresh cookies immediately.
             if (ws_data.ws_error !== WS_PX_BLOCKED) {
@@ -1767,7 +1948,7 @@ async function runLookupForBatch(batchId, logger = () => {}, options = {}) {
                     try { await wsContext.addCookies(freshNonPx); } catch (e) {}
                     const rp = wsContext.pages();
                     wsPage = rp.length > 0 ? rp[0] : await wsContext.newPage();
-                    ws_data = await _wsLookupWithFallback(wsPage, name, vintage, wsCurrency, size);
+                    ws_data = await _wsLookupWithFallback(wsPage, name, vintage, wsCurrency, size, wsSlugCache, false);
                     if (ws_data.ws_error !== WS_PX_BLOCKED) {
                       await saveSessionCookies('wine_searcher', wsContext, 'wine-searcher');
                       console.log('[WS] Credential re-login successful — session restored');

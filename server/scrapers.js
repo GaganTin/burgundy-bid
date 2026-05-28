@@ -876,38 +876,54 @@ async function _wsLoginAttempt(username, password, profileDir, proxyConfig = nul
   }
 }
 
-// Go to the WS homepage, open the location modal, ensure Worldwide is selected
-// and saved. Verifies the active class in the HTML after saving.
+// Go to the WS homepage (if needed), open the location modal, ensure Worldwide
+// is selected and saved. Verifies the active class in the HTML after saving.
 // Called as the last step before saving cookies and closing the browser.
 async function _wsSetWorldwide(page) {
   try {
     const WS_BASE = 'https://www.wine-searcher.com';
+    const jitter = (base, spread) => base + Math.floor(Math.random() * spread);
 
-    // The location modal trigger lives in the homepage nav — go there directly.
-    await page.goto(WS_BASE, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForTimeout(3000);
-
-    // Open the location modal via the nav bar trigger
+    // Try to open the location modal on the current page first — after login we're
+    // already on a WS page so navigating back to the homepage wastes 3-4 s.
+    // Only fall back to a homepage goto if the trigger isn't visible here.
+    const MODAL_SELS = ['.change-location.js-location', 'span.js-location', '.js-location'];
     let modalOpened = false;
-    for (const sel of [
-      '.change-location.js-location',
-      'span.js-location',
-      '.js-location',
-    ]) {
+    for (const sel of MODAL_SELS) {
       try {
         const el = page.locator(sel).first();
-        await el.waitFor({ state: 'visible', timeout: 4000 });
-        await el.click({ timeout: 3000 });
+        await el.waitFor({ state: 'visible', timeout: 1500 });
+        await el.click({ timeout: 2000 });
         modalOpened = true;
-        console.log(`[WS] Login: opened location modal via "${sel}"`);
+        console.log(`[WS] Login: opened location modal on current page via "${sel}"`);
         break;
       } catch (e) { /* try next */ }
     }
+
     if (!modalOpened) {
-      console.log('[WS] Login: could not open location modal on homepage');
+      // Nav trigger not found on current page — go to homepage where it always exists.
+      console.log('[WS] Login: modal trigger not found on current page — navigating to homepage');
+      await page.goto(WS_BASE, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      try { await page.waitForLoadState('networkidle', { timeout: 6000 }); } catch (e) {}
+      await page.waitForTimeout(jitter(800, 400));
+
+      for (const sel of MODAL_SELS) {
+        try {
+          const el = page.locator(sel).first();
+          await el.waitFor({ state: 'visible', timeout: 4000 });
+          await el.click({ timeout: 3000 });
+          modalOpened = true;
+          console.log(`[WS] Login: opened location modal via "${sel}"`);
+          break;
+        } catch (e) { /* try next */ }
+      }
+    }
+
+    if (!modalOpened) {
+      console.log('[WS] Login: could not open location modal');
       return;
     }
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(jitter(400, 200));
 
     // Check if worldwide button already has the "active" class
     const isActive = await page.evaluate(() => {
@@ -918,7 +934,7 @@ async function _wsSetWorldwide(page) {
     if (isActive) {
       console.log('[WS] Login: worldwide already active — closing modal');
       try { await page.keyboard.press('Escape'); } catch (e) {}
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
       return;
     }
 
@@ -930,7 +946,7 @@ async function _wsSetWorldwide(page) {
       console.log(`[WS] Login: could not click worldwide button — ${e.message}`);
       return;
     }
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(jitter(200, 150));
 
     // Click Save to commit the selection
     try {
@@ -943,9 +959,9 @@ async function _wsSetWorldwide(page) {
       return;
     }
 
-    // Wait for modal to close
+    // Wait for modal to close (event-driven; fixed wait is a short safety buffer)
     try { await page.locator('.modal.show, .modal.fade.show').waitFor({ state: 'hidden', timeout: 8000 }); } catch (e) {}
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(jitter(500, 300));
 
     // Verify active class is now present in the HTML
     const nowActive = await page.evaluate(() => {
