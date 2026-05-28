@@ -367,58 +367,65 @@ function _unlockProfile(profileDir) {
 async function _ensureWsWorldwide(page) {
   const jitter = (base, spread) => base + Math.floor(Math.random() * spread);
   try {
-    // Step 1: Click the nav bar location icon (svg.icon-logo-basic.icon-regions).
-    // The icon div has no <a>/<button> wrapper — click the SVG directly with force:true.
-    // JS evaluate fallback walks up the DOM to find any interactive ancestor.
-    let iconSel = null;
-    for (const sel of ['svg.icon-logo-basic.icon-regions', 'svg.icon-logo-basic']) {
-      try {
-        await page.locator(sel).first().click({ force: true, timeout: 3000 });
-        iconSel = sel;
-        break;
-      } catch (e) { /* try next */ }
-    }
-    if (!iconSel) {
-      const result = await page.evaluate(() => {
-        const svg = document.querySelector('svg.icon-logo-basic.icon-regions')
-          || document.querySelector('svg.icon-logo-basic');
-        if (!svg) return null;
-        const trigger = svg.closest('[data-toggle], [data-bs-toggle], a, button, [role="button"]')
-          || svg.parentElement;
-        if (trigger) { trigger.click(); return trigger.className || trigger.tagName; }
-        svg.click();
-        return 'svg-direct';
-      }).catch(() => null);
-      if (result) iconSel = 'js-evaluate';
-    }
-    if (!iconSel) {
-      console.log('[WS] Could not click location icon — skipping worldwide check');
-      return false;
-    }
-    console.log(`[WS] Clicked location icon via "${iconSel}"`);
-    await page.waitForTimeout(jitter(300, 150)); // wait for popover to appear
-
-    // Step 2: If popover already shows "Worldwide" — dismiss, nothing to do.
-    const popoverText = await page.locator('.popover-body').innerText().catch(() => '');
-    if (popoverText.toLowerCase().includes('worldwide')) {
-      console.log('[WS] Popover shows Worldwide — no modal needed');
-      try { await page.keyboard.press('Escape'); } catch (e) {}
-      await page.waitForTimeout(200);
-      return false;
-    }
-
-    // Step 3: Click "Change location" in the popover to open the modal.
+    // Step 1: On WS search result pages the location filter link is directly clickable.
+    // Step 2: Fallback — click the nav icon to open the popover, then click "Change location".
     let modalOpened = false;
-    for (const sel of ['span.change-location.js-location', '.change-location.js-location']) {
+
+    // Direct click (works on search result pages with a visible location filter)
+    for (const sel of ['.change-location.js-location', 'span.js-location', '.filter-list__item span.js-location']) {
       try {
         const el = page.locator(sel).first();
-        await el.waitFor({ state: 'visible', timeout: 3000 });
+        await el.waitFor({ state: 'visible', timeout: 2000 });
         await el.click({ timeout: 2000 });
         modalOpened = true;
         console.log(`[WS] Opened location modal via "${sel}"`);
         break;
       } catch (e) { /* try next */ }
     }
+
+    // Icon → popover fallback (homepage / wine pages)
+    if (!modalOpened) {
+      let iconSel = null;
+      try {
+        await page.locator('svg.icon-logo-basic.icon-regions').first().click({ force: true, timeout: 3000 });
+        iconSel = 'svg.icon-logo-basic.icon-regions';
+      } catch (e) {
+        const result = await page.evaluate(() => {
+          const svg = document.querySelector('svg.icon-logo-basic.icon-regions');
+          if (!svg) return null;
+          const trigger = svg.closest('[data-toggle], [data-bs-toggle], a, button, [role="button"]') || svg.parentElement;
+          if (trigger) { trigger.click(); return trigger.className || trigger.tagName; }
+          svg.click();
+          return 'svg-direct';
+        }).catch(() => null);
+        if (result) iconSel = 'js-evaluate';
+      }
+      if (iconSel) {
+        console.log(`[WS] Clicked location icon via "${iconSel}"`);
+        await page.waitForTimeout(jitter(300, 150));
+
+        // Check popover text with short timeout — don't block if popover didn't open
+        const popoverText = await page.locator('.popover-body').innerText({ timeout: 1500 }).catch(() => '');
+        if (popoverText.toLowerCase().includes('worldwide')) {
+          console.log('[WS] Popover shows Worldwide — no modal needed');
+          try { await page.keyboard.press('Escape'); } catch (e) {}
+          await page.waitForTimeout(200);
+          return false;
+        }
+
+        for (const sel of ['span.change-location.js-location', '.change-location.js-location']) {
+          try {
+            const el = page.locator(sel).first();
+            await el.waitFor({ state: 'visible', timeout: 3000 });
+            await el.click({ timeout: 2000 });
+            modalOpened = true;
+            console.log(`[WS] Opened location modal via "${sel}"`);
+            break;
+          } catch (e) { /* try next */ }
+        }
+      }
+    }
+
     if (!modalOpened) {
       console.log('[WS] Could not open location modal');
       return false;
@@ -937,14 +944,6 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
       text = (await page.evaluate(() => document.body.innerText)) || '';
       actual_url = page.url() || search_url;
     }
-
-    // Diagnostic: log first 600 chars of page text and a mid-section slice.
-    try {
-      const snippet1 = text.slice(0, 400).replace(/\n{3,}/g, '\n\n');
-      const snippet2 = text.slice(400, 800).replace(/\n{3,}/g, '\n\n');
-      console.log(`[WS diag] Page text 0-400:\n${snippet1}`);
-      console.log(`[WS diag] Page text 400-800:\n${snippet2}`);
-    } catch (e) {}
 
     // Detect WS "no results" page before trying to parse prices.
     // isHardNoResults = WS has zero matches for this name at any vintage (skip vintage fallbacks).

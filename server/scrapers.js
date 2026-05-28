@@ -924,7 +924,7 @@ async function _wsSetWorldwide(page) {
     await page.waitForTimeout(jitter(300, 150)); // wait for popover to appear
 
     // Step 2: Check the popover text. If it already says "Worldwide" we're done.
-    const popoverText = await page.locator('.popover-body').innerText().catch(() => '');
+    const popoverText = await page.locator('.popover-body').innerText({ timeout: 1500 }).catch(() => '');
     if (popoverText.toLowerCase().includes('worldwide')) {
       console.log('[WS] Login: popover shows Worldwide — no modal needed');
       try { await page.keyboard.press('Escape'); } catch (e) {}
