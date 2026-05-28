@@ -367,13 +367,33 @@ function _unlockProfile(profileDir) {
 async function _ensureWsWorldwide(page) {
   const jitter = (base, spread) => base + Math.floor(Math.random() * spread);
   try {
-    // Open the location modal
+    // Step 1: Click the nav bar location icon to open the popover.
+    // The "Change location" link lives inside that popover — it's not visible until the icon is clicked.
+    const ICON_SELS = ['svg.icon-logo-basic.icon-regions', 'svg.icon-regions:not([aria-hidden])'];
+    let iconClicked = false;
+    for (const sel of ICON_SELS) {
+      try {
+        const el = page.locator(sel).first();
+        await el.waitFor({ state: 'visible', timeout: 2000 });
+        await el.click({ timeout: 2000 });
+        iconClicked = true;
+        console.log(`[WS] Clicked location icon via "${sel}"`);
+        break;
+      } catch (e) { /* try next */ }
+    }
+    if (!iconClicked) {
+      console.log('[WS] Could not click location icon — skipping worldwide check');
+      return false;
+    }
+    await page.waitForTimeout(jitter(300, 150)); // wait for popover to appear
+
+    // Step 2: Click "Change location" in the popover to open the modal
     let modalOpened = false;
-    for (const sel of ['.change-location.js-location', 'span.js-location', '.filter-list__item span.js-location']) {
+    for (const sel of ['span.change-location.js-location', '.change-location.js-location']) {
       try {
         const el = page.locator(sel).first();
         await el.waitFor({ state: 'visible', timeout: 3000 });
-        await el.click({ timeout: 3000 });
+        await el.click({ timeout: 2000 });
         modalOpened = true;
         console.log(`[WS] Opened location modal via "${sel}"`);
         break;

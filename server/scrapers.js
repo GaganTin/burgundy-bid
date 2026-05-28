@@ -884,39 +884,49 @@ async function _wsSetWorldwide(page) {
     const WS_BASE = 'https://www.wine-searcher.com';
     const jitter = (base, spread) => base + Math.floor(Math.random() * spread);
 
-    // Try to open the location modal on the current page first — after login we're
-    // already on a WS page so navigating back to the homepage wastes 3-4 s.
-    // Only fall back to a homepage goto if the trigger isn't visible here.
-    const MODAL_SELS = ['.change-location.js-location', 'span.js-location', '.js-location'];
-    let modalOpened = false;
-    for (const sel of MODAL_SELS) {
-      try {
-        const el = page.locator(sel).first();
-        await el.waitFor({ state: 'visible', timeout: 1500 });
-        await el.click({ timeout: 2000 });
-        modalOpened = true;
-        console.log(`[WS] Login: opened location modal on current page via "${sel}"`);
-        break;
-      } catch (e) { /* try next */ }
+    // The nav bar has a regions icon. Clicking it opens a popover. Inside the popover
+    // is "Change location" — clicking that opens the full location modal.
+    // The "Change location" link is NOT visible until the icon popover is open.
+    const ICON_SELS = ['svg.icon-logo-basic.icon-regions', 'svg.icon-regions:not([aria-hidden])'];
+
+    async function clickNavIcon() {
+      for (const sel of ICON_SELS) {
+        try {
+          const el = page.locator(sel).first();
+          await el.waitFor({ state: 'visible', timeout: 2000 });
+          await el.click({ timeout: 2000 });
+          return true;
+        } catch (e) { /* try next */ }
+      }
+      return false;
     }
 
-    if (!modalOpened) {
-      // Nav trigger not found on current page — go to homepage where it always exists.
-      console.log('[WS] Login: modal trigger not found on current page — navigating to homepage');
+    // Try current page first; fall back to homepage if icon not found.
+    let iconClicked = await clickNavIcon();
+    if (!iconClicked) {
+      console.log('[WS] Login: location icon not found on current page — navigating to homepage');
       await page.goto(WS_BASE, { waitUntil: 'domcontentloaded', timeout: 60000 });
       try { await page.waitForLoadState('networkidle', { timeout: 6000 }); } catch (e) {}
       await page.waitForTimeout(jitter(800, 400));
+      iconClicked = await clickNavIcon();
+    }
+    if (!iconClicked) {
+      console.log('[WS] Login: could not click location icon');
+      return;
+    }
+    await page.waitForTimeout(jitter(300, 150)); // wait for popover to appear
 
-      for (const sel of MODAL_SELS) {
-        try {
-          const el = page.locator(sel).first();
-          await el.waitFor({ state: 'visible', timeout: 4000 });
-          await el.click({ timeout: 3000 });
-          modalOpened = true;
-          console.log(`[WS] Login: opened location modal via "${sel}"`);
-          break;
-        } catch (e) { /* try next */ }
-      }
+    // Click "Change location" in the popover to open the modal
+    let modalOpened = false;
+    for (const sel of ['span.change-location.js-location', '.change-location.js-location']) {
+      try {
+        const el = page.locator(sel).first();
+        await el.waitFor({ state: 'visible', timeout: 3000 });
+        await el.click({ timeout: 2000 });
+        modalOpened = true;
+        console.log(`[WS] Login: opened location modal via "${sel}"`);
+        break;
+      } catch (e) { /* try next */ }
     }
 
     if (!modalOpened) {
