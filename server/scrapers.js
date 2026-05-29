@@ -884,44 +884,67 @@ async function _wsSetWorldwide(page) {
     const WS_BASE = 'https://www.wine-searcher.com';
     const jitter = (base, spread) => base + Math.floor(Math.random() * spread);
 
-    // Step 1: Click the nav bar location icon (svg.icon-logo-basic.icon-regions) to open the popover.
-    // The icon div has no <a>/<button> wrapper — click the SVG directly with force:true.
-    // JS evaluate fallback walks up the DOM to find any interactive ancestor.
-    async function clickLocIcon() {
-      for (const sel of ['svg.icon-logo-basic.icon-regions', 'svg.icon-logo-basic']) {
-        try {
-          await page.locator(sel).first().click({ force: true, timeout: 3000 });
-          return sel;
-        } catch (e) { /* try next */ }
-      }
-      const result = await page.evaluate(() => {
-        const svg = document.querySelector('svg.icon-logo-basic.icon-regions')
-          || document.querySelector('svg.icon-logo-basic');
-        if (!svg) return null;
-        const trigger = svg.closest('[data-toggle], [data-bs-toggle], a, button, [role="button"]')
-          || svg.parentElement;
-        if (trigger) { trigger.click(); return trigger.className || trigger.tagName; }
-        svg.click();
-        return 'svg-direct';
-      }).catch(() => null);
-      return result ? 'js-evaluate' : null;
+    // Read the nav bar location label — "ALL" + icon-regions = worldwide
+    async function readNavState() {
+      return page.evaluate(() => {
+        const locDiv = document.querySelector('#location-popover') || document.querySelector('.page-nav-location-label');
+        if (!locDiv) return { found: false, isWorldwide: false, label: '' };
+        const span = locDiv.querySelector('span.d-lg-inline-block');
+        const svg  = locDiv.querySelector('svg');
+        const iconClass = svg ? (svg.className.baseVal || svg.getAttribute('class') || '') : '';
+        const label = span ? span.textContent.trim() : '';
+        return { found: true, label, isWorldwide: label === 'ALL' || iconClass.includes('icon-regions') };
+      }).catch(() => ({ found: false, isWorldwide: false, label: '' }));
     }
 
-    // Try current page first; navigate to homepage as fallback.
-    let iconSel = await clickLocIcon();
-    if (!iconSel) {
-      console.log('[WS] Login: location icon not found on current page — navigating to homepage');
+    // If nav label not found on current page, navigate to homepage first
+    let nav = await readNavState();
+    if (!nav.found) {
+      console.log('[WS] Login: location label not found — navigating to homepage');
       await page.goto(WS_BASE, { waitUntil: 'domcontentloaded', timeout: 60000 });
       try { await page.waitForLoadState('networkidle', { timeout: 6000 }); } catch (e) {}
       await page.waitForTimeout(jitter(800, 400));
-      iconSel = await clickLocIcon();
+
+      // Solve captcha if present before proceeding
+      const inner = ((await page.evaluate(() => document.body.innerText).catch(() => '')) || '').toLowerCase();
+      const html  = (await page.content().catch(() => '')).toLowerCase();
+      if (PX_SIGNALS.some(sig => (inner + ' ' + html).includes(sig))) {
+        console.log('[WS] Login: PX captcha on homepage — attempting solve...');
+        const cleared = await _solvePxCaptcha(page);
+        if (!cleared) { console.log('[WS] Login: PX not cleared — skipping worldwide'); return; }
+      }
+
+      nav = await readNavState();
     }
-    if (!iconSel) {
-      console.log('[WS] Login: could not click location icon');
+
+    if (nav.isWorldwide) {
+      console.log(`[WS] Login: nav already shows Worldwide ("${nav.label}") — done`);
       return;
     }
-    console.log(`[WS] Login: clicked location icon via "${iconSel}"`);
-    await page.waitForTimeout(jitter(300, 150)); // wait for popover to appear
+    console.log(`[WS] Login: nav shows "${nav.label}" — opening location popover`);
+
+    // Step 1: Click #location-popover to open the popover
+    let popoverOpened = false;
+    for (const sel of ['#location-popover', 'div.page-nav-location-label']) {
+      try {
+        await page.locator(sel).first().click({ force: true, timeout: 3000 });
+        popoverOpened = true;
+        break;
+      } catch (e) { /* try next */ }
+    }
+    if (!popoverOpened) {
+      popoverOpened = await page.evaluate(() => {
+        const el = document.querySelector('#location-popover') || document.querySelector('.page-nav-location-label');
+        if (!el) return false;
+        el.click();
+        return true;
+      }).catch(() => false);
+    }
+    if (!popoverOpened) {
+      console.log('[WS] Login: could not click location popover trigger');
+      return;
+    }
+    await page.waitForTimeout(jitter(300, 150));
 
     // Step 2: Check the popover text. If it already says "Worldwide" we're done.
     const popoverText = await page.locator('.popover-body').innerText({ timeout: 1500 }).catch(() => '');
@@ -932,7 +955,7 @@ async function _wsSetWorldwide(page) {
       return;
     }
 
-    // Step 3: Click "Change location" in the popover to open the modal.
+    // Step 3: Click "Change location" in the popover to open the modal
     let modalOpened = false;
     for (const sel of ['span.change-location.js-location', '.change-location.js-location']) {
       try {
@@ -950,38 +973,32 @@ async function _wsSetWorldwide(page) {
     }
     await page.waitForTimeout(jitter(400, 200));
 
-    // Step 4: Check active class; click .js-toggle-worldwide span if not active.
+    // Step 4: Click worldwide button if not already active
     const isActive = await page.evaluate(() => {
       const btn = document.querySelector('.google-map__worldwide-button');
       return btn ? btn.classList.contains('active') : false;
     }).catch(() => false);
 
-    if (isActive) {
-      console.log('[WS] Login: worldwide already active — closing modal');
-      try { await page.keyboard.press('Escape'); } catch (e) {}
-      await page.waitForTimeout(200);
-      return;
-    }
-
-    console.log('[WS] Login: worldwide not active — selecting it...');
-    try {
-      // Click the text span (.js-toggle-worldwide) inside the worldwide button
-      const wwSel = '.js-toggle-worldwide[data-location="worldwide"]';
-      const wwEl = page.locator(wwSel).first();
-      await wwEl.waitFor({ state: 'visible', timeout: 3000 });
-      await wwEl.click({ timeout: 3000 });
-    } catch (e) {
-      // Fallback: click the parent div
-      try {
-        await page.locator('.google-map__worldwide-button').first().click({ timeout: 3000 });
-      } catch (e2) {
-        console.log(`[WS] Login: could not click worldwide button — ${e2.message}`);
+    if (!isActive) {
+      console.log('[WS] Login: worldwide not active — selecting it...');
+      let wwClicked = false;
+      for (const sel of ['.google-map__worldwide-button', '.google-map__worldwide-button .js-toggle-worldwide']) {
+        try {
+          const el = page.locator(sel).first();
+          await el.waitFor({ state: 'visible', timeout: 3000 });
+          await el.click({ timeout: 3000 });
+          wwClicked = true;
+          break;
+        } catch (e) { /* try next */ }
+      }
+      if (!wwClicked) {
+        console.log('[WS] Login: could not click worldwide button');
         return;
       }
+      await page.waitForTimeout(jitter(200, 150));
     }
-    await page.waitForTimeout(jitter(200, 150));
 
-    // Step 5: Click Save.
+    // Step 5: Click Save
     try {
       const saveBtn = page.locator('button.js-save-location').first();
       await saveBtn.waitFor({ state: 'visible', timeout: 3000 });
@@ -995,11 +1012,8 @@ async function _wsSetWorldwide(page) {
     try { await page.locator('.modal.show, .modal.fade.show').waitFor({ state: 'hidden', timeout: 8000 }); } catch (e) {}
     await page.waitForTimeout(jitter(500, 300));
 
-    const nowActive = await page.evaluate(() => {
-      const btn = document.querySelector('.google-map__worldwide-button');
-      return btn ? btn.classList.contains('active') : false;
-    }).catch(() => false);
-    console.log(`[WS] Login: worldwide active after save = ${nowActive}`);
+    const navAfter = await readNavState();
+    console.log(`[WS] Login: worldwide set — nav now "${navAfter.label}" (worldwide=${navAfter.isWorldwide})`);
   } catch (e) {
     console.log(`[WS] Login: could not set worldwide location — ${e.message}`);
   }

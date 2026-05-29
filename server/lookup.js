@@ -366,31 +366,79 @@ function _unlockProfile(profileDir) {
 // Returns true if a change was made.
 async function _ensureWsWorldwide(page, force = false) {
   try {
-    // ── Detect non-worldwide (skip when force=true) ───────────────────────────
-    let addressText = null;
-    try {
-      addressText = await page.locator('.change-location .address, .filter-list__item .address, .location-selected-container .address').first()
-        .textContent({ timeout: 2000 });
-    } catch (e) { /* not all pages have this element */ }
+    // ── Detect current location via nav bar ───────────────────────────────────
+    // Nav label "ALL" + icon-regions class = worldwide; anything else = not worldwide
+    const navState = await page.evaluate(() => {
+      const locDiv = document.querySelector('#location-popover') || document.querySelector('.page-nav-location-label');
+      if (!locDiv) return { found: false, isWorldwide: false, label: '' };
+      const span = locDiv.querySelector('span.d-lg-inline-block');
+      const svg  = locDiv.querySelector('svg');
+      const iconClass = svg ? (svg.className.baseVal || svg.getAttribute('class') || '') : '';
+      const label = span ? span.textContent.trim() : '';
+      return { found: true, label, isWorldwide: label === 'ALL' || iconClass.includes('icon-regions') };
+    }).catch(() => ({ found: false, isWorldwide: false, label: '' }));
 
-    const inner = ((await page.evaluate(() => document.body.innerText).catch(() => '')) || '').toLowerCase();
-    const hasCountryFilter = inner.includes('searching products for') && !inner.slice(0, 4000).includes('worldwide');
-    const knownCountries = ['hong kong', 'united states', 'australia', 'united kingdom', 'germany', 'france', 'japan', 'canada', 'singapore'];
-    const hasKnownCountry = knownCountries.some(c => inner.slice(0, 2000).includes(c));
-    const cssSaysNonWorldwide = addressText && addressText.trim().toLowerCase() !== 'worldwide';
-    const isNonWorldwide = hasCountryFilter || hasKnownCountry || cssSaysNonWorldwide;
-
-    if (!force && !isNonWorldwide) {
-      console.log(`[WS] Location already Worldwide (sidebar="${addressText?.trim() || 'n/a'}")`);
+    if (!force && navState.isWorldwide) {
+      console.log(`[WS] Location already Worldwide (nav="${navState.label}")`);
       return false;
     }
 
-    const detected = addressText ? `"${addressText.trim()}"` : '(text-detected)';
-    console.log(`[WS] Setting location to Worldwide (current=${detected}, force=${force})...`);
+    const detected = navState.found ? `"${navState.label}"` : '(nav not found)';
+    console.log(`[WS] Setting location to Worldwide (nav=${detected}, force=${force})...`);
 
-    // ── Step 1: Click the "Change location" button to open the modal ──────────
+    // ── Step 1: Click #location-popover to open the popover ──────────────────
+    let popoverOpened = false;
+    for (const sel of ['#location-popover', 'div.page-nav-location-label']) {
+      try {
+        await page.locator(sel).first().click({ force: true, timeout: 3000 });
+        popoverOpened = true;
+        break;
+      } catch (e) { /* try next */ }
+    }
+    if (!popoverOpened) {
+      popoverOpened = await page.evaluate(() => {
+        const el = document.querySelector('#location-popover') || document.querySelector('.page-nav-location-label');
+        if (!el) return false;
+        el.click();
+        return true;
+      }).catch(() => false);
+    }
+    if (!popoverOpened) {
+      console.log('[WS] Could not click location popover trigger');
+      await _saveDiag(page, 'ws_location_no_popover_trigger');
+      return false;
+    }
+    await page.waitForTimeout(800);
+
+    // Solve captcha if it appeared after clicking the popover
+    const innerPop = ((await page.evaluate(() => document.body.innerText).catch(() => '')) || '').toLowerCase();
+    const htmlPop  = (await page.content().catch(() => '')).toLowerCase();
+    if (PX_SIGNALS.some(sig => (innerPop + ' ' + htmlPop).includes(sig))) {
+      console.log('[WS] PX captcha detected during location set — attempting solve...');
+      const cleared = await _solvePxCaptcha(page);
+      if (!cleared) {
+        console.log('[WS] PX not cleared — skipping location set');
+        await _saveDiag(page, 'ws_location_px_blocked');
+        return false;
+      }
+      // Re-open popover after captcha clears
+      for (const sel of ['#location-popover', 'div.page-nav-location-label']) {
+        try { await page.locator(sel).first().click({ force: true, timeout: 3000 }); break; } catch (e) {}
+      }
+      await page.waitForTimeout(800);
+    }
+
+    // If popover already says Worldwide and not forcing, nothing to do
+    const popoverText = await page.locator('.popover-body').innerText({ timeout: 1500 }).catch(() => '');
+    if (!force && popoverText.toLowerCase().includes('worldwide')) {
+      console.log('[WS] Location already Worldwide (popover confirmed)');
+      try { await page.keyboard.press('Escape'); } catch (e) {}
+      return false;
+    }
+
+    // ── Step 2: Click "Change location" in the popover to open the modal ──────
     let modalOpened = false;
-    for (const sel of ['.change-location.js-location', 'span.js-location', "span:has-text('Change')", '.filter-list__item span.js-location']) {
+    for (const sel of ['span.change-location.js-location', '.change-location.js-location', 'span.js-location']) {
       try {
         const el = page.locator(sel).first();
         await el.waitFor({ state: 'visible', timeout: 2000 });
@@ -408,31 +456,33 @@ async function _ensureWsWorldwide(page, force = false) {
 
     await page.waitForTimeout(1000);
 
-    // ── Step 2: Click the "Worldwide" option ─────────────────────────────────
-    let wwClicked = false;
-    for (const sel of [
-      '.js-toggle-worldwide[data-location="worldwide"]',
-      '.google-map__worldwide-button .js-toggle-worldwide',
-      '.google-map__worldwide-button',
-    ]) {
-      try {
-        const el = page.locator(sel).first();
-        await el.waitFor({ state: 'visible', timeout: 3000 });
-        await el.click({ timeout: 3000 });
-        wwClicked = true;
-        console.log(`[WS] Selected Worldwide via "${sel}"`);
-        break;
-      } catch (e) { /* try next */ }
-    }
-    if (!wwClicked) {
-      console.log('[WS] Could not find Worldwide option in modal');
-      await _saveDiag(page, 'ws_location_no_worldwide_btn');
-      return false;
+    // ── Step 3: Click worldwide button if not already active ─────────────────
+    const isActive = await page.evaluate(() => {
+      const btn = document.querySelector('.google-map__worldwide-button');
+      return btn ? btn.classList.contains('active') : false;
+    }).catch(() => false);
+
+    if (!isActive) {
+      let wwClicked = false;
+      for (const sel of ['.google-map__worldwide-button', '.google-map__worldwide-button .js-toggle-worldwide']) {
+        try {
+          const el = page.locator(sel).first();
+          await el.waitFor({ state: 'visible', timeout: 3000 });
+          await el.click({ timeout: 3000 });
+          wwClicked = true;
+          console.log(`[WS] Selected Worldwide via "${sel}"`);
+          break;
+        } catch (e) { /* try next */ }
+      }
+      if (!wwClicked) {
+        console.log('[WS] Could not find Worldwide option in modal');
+        await _saveDiag(page, 'ws_location_no_worldwide_btn');
+        return false;
+      }
+      await page.waitForTimeout(500);
     }
 
-    await page.waitForTimeout(500);
-
-    // ── Step 3: Click "Save" to commit the worldwide selection ────────────────
+    // ── Step 4: Click "Save" to commit the worldwide selection ────────────────
     try {
       const saveBtn = page.locator('button.js-save-location').first();
       await saveBtn.waitFor({ state: 'visible', timeout: 3000 });
@@ -481,6 +531,13 @@ function _roundPrice(priceStr) {
   const m = priceStr.match(/^([$€£])\s*([\d,]+(?:\.\d+)?)/);
   if (!m) return priceStr;
   return m[1] + Math.round(parseFloat(m[2].replace(/,/g, ''))).toLocaleString('en-US');
+}
+
+function _ceilPrice(priceStr) {
+  if (!priceStr) return priceStr;
+  const m = priceStr.match(/^([$€£])\s*([\d,]+(?:\.\d+)?)/);
+  if (!m) return priceStr;
+  return m[1] + Math.ceil(parseFloat(m[2].replace(/,/g, ''))).toLocaleString('en-US');
 }
 
 // Bottle-size rules shared by _extractCtSize, _normalizeBottleSize, _sizeToMl
@@ -869,7 +926,11 @@ async function _primeWsLocation(page) {
     const url = `${WS_BASE}/find/-/any/-/-/ndbipe?Xtax_mode=e&shoptype=1%2C0`;
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(2000);
-    await _waitForPxClear(page, 8000);
+    const pxCleared = await _waitForPxClear(page, 8000);
+    if (!pxCleared) {
+      console.log('[WS] PX captcha on prime URL — attempting solve...');
+      await _solvePxCaptcha(page);
+    }
 
     // force=true: always open modal and save Worldwide regardless of active-class state.
     const changed = await _ensureWsWorldwide(page, true);
@@ -1086,9 +1147,9 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
 
     let ws_min = null;
     if (amounts.length) {
-      ws_min = '$' + Math.round(Math.min(...amounts)).toLocaleString('en-US');
+      ws_min = '$' + Math.ceil(Math.min(...amounts)).toLocaleString('en-US');
     } else if (statsFromM) {
-      const candidate = _roundPrice('$' + statsFromM[1]);
+      const candidate = _ceilPrice('$' + statsFromM[1]);
       if (!exclude_auctions) {
         ws_min = candidate;
       } else {
@@ -1097,7 +1158,7 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
       }
     } else {
       const mm = html.match(/from[^<]{0,20}\$([\d,]+(?:\.\d+)?)/i);
-      if (mm) ws_min = _roundPrice('$' + mm[1]);
+      if (mm) ws_min = _ceilPrice('$' + mm[1]);
     }
 
     if (avg_price) {
