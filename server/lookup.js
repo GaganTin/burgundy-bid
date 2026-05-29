@@ -533,11 +533,11 @@ function _roundPrice(priceStr) {
   return m[1] + Math.round(parseFloat(m[2].replace(/,/g, ''))).toLocaleString('en-US');
 }
 
-function _ceilPrice(priceStr) {
+function _floorPrice(priceStr) {
   if (!priceStr) return priceStr;
   const m = priceStr.match(/^([$€£])\s*([\d,]+(?:\.\d+)?)/);
   if (!m) return priceStr;
-  return m[1] + Math.ceil(parseFloat(m[2].replace(/,/g, ''))).toLocaleString('en-US');
+  return m[1] + Math.floor(parseFloat(m[2].replace(/,/g, ''))).toLocaleString('en-US');
 }
 
 // Bottle-size rules shared by _extractCtSize, _normalizeBottleSize, _sizeToMl
@@ -1147,9 +1147,9 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
 
     let ws_min = null;
     if (amounts.length) {
-      ws_min = '$' + Math.ceil(Math.min(...amounts)).toLocaleString('en-US');
+      ws_min = '$' + Math.floor(Math.min(...amounts)).toLocaleString('en-US');
     } else if (statsFromM) {
-      const candidate = _ceilPrice('$' + statsFromM[1]);
+      const candidate = _floorPrice('$' + statsFromM[1]);
       if (!exclude_auctions) {
         ws_min = candidate;
       } else {
@@ -1158,7 +1158,7 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
       }
     } else {
       const mm = html.match(/from[^<]{0,20}\$([\d,]+(?:\.\d+)?)/i);
-      if (mm) ws_min = _ceilPrice('$' + mm[1]);
+      if (mm) ws_min = _floorPrice('$' + mm[1]);
     }
 
     if (avg_price) {
