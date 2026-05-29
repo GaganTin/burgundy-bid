@@ -1136,7 +1136,22 @@ async function ws_get_wine_data(page, search_url, _size = '', exclude_auctions =
           mPrice = null;
         }
       }
-      if (!mPrice) continue;
+      if (!mPrice) {
+        // Per-bottle equivalent: "$218.64 / 750ml" on case/multi-bottle offers.
+        // The case total (e.g. $1,311) is a standalone line that matches above;
+        // this per-bottle line has " / 750ml" suffix so it never matches the
+        // end-of-line pattern. Capture it explicitly so min() picks the correct
+        // per-bottle price rather than the inflated case price.
+        const mPerBottle = stripped.match(/\$\s*([\d,]+(?:\.\d+)?)\s*\/\s*750\s*ml\b/i);
+        if (mPerBottle) {
+          if (exclude_auctions) {
+            const ctx = merchLines.slice(Math.max(0, i - 5), i + 5).join('\n');
+            if (AUCTION_KW.test(ctx)) { continue; }
+          }
+          try { amounts.push(parseFloat(mPerBottle[1].replace(/,/g, ''))); } catch (e) {}
+        }
+        continue;
+      }
 
       if (exclude_auctions) {
         const ctx = merchLines.slice(Math.max(0, i - 5), i + 5).join('\n');
