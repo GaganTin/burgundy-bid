@@ -887,6 +887,7 @@ async function jobCreditExpiryReminders() {
       SELECT u.id, u.email, u.full_name, u.credits_expiry_date
       FROM users u
       WHERE u.is_deleted = false
+        AND u.subscription_plan NOT IN ('family', 'admin')
         AND u.credits_expiry_date IS NOT NULL
         AND ${intervalExpr}
         AND NOT EXISTS (
@@ -2080,6 +2081,8 @@ app.post('/admin/users/:id/assign', authMiddleware, adminMiddleware, async (req,
   if (subscription_plan !== undefined) { updates.push(`subscription_plan = $${vals.length + 1}`); vals.push(subscription_plan); }
   if (role_type !== undefined)          { updates.push(`role_type = $${vals.length + 1}`);         vals.push(role_type); }
   if (updates.length === 0) return res.status(400).json({ error: 'Nothing to update' });
+  // family/admin have unlimited lifetime credits — no expiry applies
+  if (['family', 'admin'].includes(subscription_plan)) updates.push(`credits_expiry_date = NULL`);
 
   vals.push(id);
   try {
